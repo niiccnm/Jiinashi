@@ -1,0 +1,92 @@
+{
+  "name": "jiinashi",
+  "version": "0.0.1",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('dist-electron',{recursive:true,force:true});\"",
+    "predist": "npm run clean",
+    "dist": "npm run build && electron-builder"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/niiccnm/jiinashi.git"
+  },
+  "build": {
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "niiccnm",
+        "repo": "jiinashi"
+      }
+    ],
+    "appId": "com.jiinashi.app",
+    "productName": "Jiinashi",
+    "directories": {
+      "output": "dist-electron/release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "!dist-electron/release/**",
+      "package.json",
+      "LICENSE",
+      "README.md",
+      "!**/*.map",
+      "!**/*.d.ts",
+      "!**/node_modules/**/{test,__tests__,tests,powered-test,example,examples,docs,doc}",
+      "!**/node_modules/**/*.md",
+      "!**/node_modules/**/LICENSE*",
+      "!**/node_modules/**/.git*"
+    ],
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "${productName}_Setup_${version}_${arch}.${ext}",
+      "include": "build/installer.nsh",
+      "license": "build/installer-license.txt"
+    }
+  },
+  "keywords": [],
+  "author": "niiccnm",
+  "license": "Apache-2.0",
+  "description": "A lightning-fast, modern local library manager and reader for Doujinshi and Manga, designed to provide a seamless browsing and reading experience.",
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@types/adm-zip": "^0.5.7",
+    "@types/fs-extra": "^11.0.4",
+    "autoprefixer": "^10.4.22",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.12",
+    "postcss": "^8.5.6",
+    "svelte": "^5.45.9",
+    "svelte-check": "^4.3.4",
+    "svelte-preprocess": "^6.0.3",
+    "tailwindcss": "^3.4.19",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  },
+  "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "adm-zip": "^0.5.16",
+    "better-sqlite3": "^12.5.0",
+    "electron-updater": "^6.7.3",
+    "node-stream-zip": "^1.15.0",
+    "node-unrar-js": "^2.0.2"
+  }
+}

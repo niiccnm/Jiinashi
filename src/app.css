@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0a; /* Matches new app background */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #262626; /* Neutral 800 */
+  border-radius: 5px;
+  border: 2px solid #0a0a0a; /* Creates padding effect */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #404040; /* Neutral 700 */
+}
+
+::-webkit-scrollbar-corner {
+  background: #0a0a0a;
+}
+
+.no-animations * {
+  transition: none !important;
+  animation: none !important;
+}
+
+.is-resizing,
+.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  transition: none !important;
+}
