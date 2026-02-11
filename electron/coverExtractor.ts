@@ -45,7 +45,7 @@ export function isCoverCached(archivePath: string): boolean {
 
 /** Extract first image from ZIP/CBZ as cover */
 export async function extractCoverFromZip(
-  archivePath: string
+  archivePath: string,
 ): Promise<string | null> {
   try {
     const hash = getPathHash(archivePath);
@@ -73,7 +73,7 @@ export async function extractCoverFromZip(
         a.name.localeCompare(b.name, undefined, {
           numeric: true,
           sensitivity: "base",
-        })
+        }),
       );
 
     if (imageEntries.length === 0) {
@@ -81,7 +81,7 @@ export async function extractCoverFromZip(
       if (entryList.length > 0) {
         console.warn(
           `[CoverExtractor] Entries sample:`,
-          entryList.slice(0, 5).map((e) => e.name)
+          entryList.slice(0, 5).map((e) => e.name),
         );
       }
       await zip.close();
@@ -127,7 +127,7 @@ export async function extractCoverFromZip(
 
     if (image.isEmpty()) {
       console.warn(
-        `[CoverExtractor] nativeImage failed to load buffer for ${archivePath} (Entry: ${firstEntry.name}). Using raw buffer.`
+        `[CoverExtractor] nativeImage failed to load buffer for ${archivePath} (Entry: ${firstEntry.name}). Using raw buffer.`,
       );
       fs.writeFileSync(jpgPath, imageBuffer);
       return jpgPath;
@@ -158,7 +158,7 @@ export async function extractCoverFromZip(
 }
 
 export async function extractCoverFromRar(
-  archivePath: string
+  archivePath: string,
 ): Promise<string | null> {
   try {
     const hash = getPathHash(archivePath);
@@ -177,7 +177,7 @@ export async function extractCoverFromRar(
 
     // Filter images
     const imageEntries = entries.filter((name) =>
-      /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name)
+      /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name),
     );
 
     if (imageEntries.length === 0) {
@@ -212,7 +212,7 @@ export async function extractCoverFromRar(
 
     if (image.isEmpty()) {
       console.warn(
-        `[CoverExtractor] nativeImage failed to load RAR buffer for ${archivePath}. Using raw buffer.`
+        `[CoverExtractor] nativeImage failed to load RAR buffer for ${archivePath}. Using raw buffer.`,
       );
       fs.writeFileSync(jpgPath, buffer);
       return jpgPath;
@@ -244,7 +244,7 @@ export async function extractCoverFromRar(
 
 /** Extract cover from any supported archive */
 export async function extractCover(
-  archivePath: string
+  archivePath: string,
 ): Promise<string | null> {
   const ext = path.extname(archivePath).toLowerCase();
 
@@ -252,7 +252,7 @@ export async function extractCover(
     return extractCoverFromZip(archivePath);
   }
 
-  if (ext === ".rar" || ext === ".cbr") {
+  if (ext === ".rar" || ext === ".cbr" || ext === ".7z" || ext === ".cb7") {
     return extractCoverFromRar(archivePath);
   }
 
@@ -261,14 +261,21 @@ export async function extractCover(
     return archivePath;
   }
 
-  // TODO: Add support for 7Z, PDF
+  if (ext === ".pdf") {
+    // PDF covers require heavy deps, using generic for now but page count is ok
+    console.log(
+      `[CoverExtractor] PDF cover extraction not yet fully implemented: ${archivePath}`,
+    );
+    return null;
+  }
+
   console.warn(`Cover extraction not yet supported for: ${ext}`);
   return null;
 }
 
 /** Get cover for a folder using its first book */
 export async function extractCoverFromFolder(
-  folderPath: string
+  folderPath: string,
 ): Promise<string | null> {
   try {
     const files = fs.readdirSync(folderPath);
@@ -285,7 +292,7 @@ export async function extractCoverFromFolder(
 
     // Sort files naturally
     const sortedFiles = files.sort((a, b) =>
-      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
 
     // Find first supported file

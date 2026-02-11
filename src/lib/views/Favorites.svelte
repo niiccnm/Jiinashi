@@ -9,6 +9,7 @@
   import ArchiveManager from "../components/ArchiveManager.svelte";
   import { SelectionModel } from "../state/selection.svelte";
   import { dragScroll } from "../utils/dragScroll";
+  import FolderSwitcher from "../components/FolderSwitcher.svelte";
   import type { LibraryItem } from "../stores/app";
 
   let items = $state<LibraryItem[]>([]);
@@ -16,17 +17,72 @@
   let gridSize = $state<"small" | "medium" | "large">(
     (typeof localStorage !== "undefined" &&
       (localStorage.getItem("favoritesGridSize") as any)) ||
-      "medium"
+      "medium",
   );
   let searchQuery = $state("");
+  let searchResults = $state<LibraryItem[]>([]);
+  let isSearching = $state(false);
+
   let itemCountHovered = $state(false);
   let managingArchiveItem = $state<LibraryItem | null>(null);
+
+  let selectedRoot = $state(
+    localStorage.getItem("favoritesSelectedRoot") || "",
+  );
+  let librarySortOrder = $state<"alphabetical" | "imported">("alphabetical");
+  let skipItemAnimation = $state(false);
+
+  $effect(() => {
+    localStorage.setItem("favoritesSelectedRoot", selectedRoot);
+    loadFavorites(true);
+  });
+
+  // Debounced search effect
+  let searchTimeout: ReturnType<typeof setTimeout>;
+
+  // Combined params for effect reactivity
+  let searchParamsForEffect = $derived({
+    q: searchQuery,
+    r: selectedRoot,
+  });
+
+  $effect(() => {
+    const { q, r } = searchParamsForEffect;
+
+    if (q.trim()) {
+      clearTimeout(searchTimeout);
+
+      // Slower for typing, faster for scope switch
+      const isNavOnly = untrack(() => lastProcessedQuery) === q;
+      const delay = isNavOnly ? 50 : 300;
+      lastProcessedQuery = q;
+
+      searchTimeout = setTimeout(async () => {
+        isSearching = true;
+        try {
+          const results = await window.electronAPI.library.search(q, {
+            favoritesOnly: true,
+            root: r,
+          });
+          if (q === searchQuery) {
+            searchResults = results;
+          }
+        } finally {
+          isSearching = false;
+        }
+      }, delay);
+    } else {
+      searchResults = [];
+      lastProcessedQuery = "";
+    }
+  });
+
+  let lastProcessedQuery = "";
 
   // Pagination/Incremental Rendering
   let renderLimit = $state(50);
   let loaderRef = $state<HTMLElement | null>(null);
 
-  // Mapping for tags -> codes
   const LANGUAGE_CODES: Record<string, string> = {
     English: "EN",
     Japanese: "JP",
@@ -39,13 +95,11 @@
 
   function getLanguageCodes(tagsList: string | undefined): string[] {
     if (!tagsList) return [];
-    const tags = tagsList.split(",").map((t) => t.trim());
     const codes: string[] = [];
+    const tags = tagsList.split(",").map((t) => t.trim());
 
     for (const tag of tags) {
-      if (LANGUAGE_CODES[tag]) {
-        codes.push(LANGUAGE_CODES[tag]);
-      }
+      if (LANGUAGE_CODES[tag]) codes.push(LANGUAGE_CODES[tag]);
     }
     return codes;
   }
@@ -65,80 +119,71 @@
   });
 
   let filteredItems = $derived.by(() => {
-    let currentItems = items;
+    let currentItems = searchQuery.trim() ? searchResults : items;
 
-    // 1. Filter by Selected/Excluded Types
-    const hasTypeFilters =
-      selectedTypeIds.length > 0 || excludedTypeIds.length > 0;
-    if (hasTypeFilters) {
-      currentItems = currentItems.filter((item) => {
-        const itemTypes = item.types_list
-          ? item.types_list.split(",").map((t) => t.trim().toLowerCase())
-          : [];
+    const matchItem = (item: LibraryItem) => {
+      // 1. Filter by Selected/Excluded Types
+      const itemTypes = item.types_list
+        ? item.types_list.split(",").map((t) => t.trim().toLowerCase())
+        : [];
 
-        // Exclusion check (priority)
-        if (excludedTypeIds.length > 0) {
-          const hasExcludedType = excludedTypeIds.some((id) => {
-            const type = availableTypes.find((t) => t.id === id);
-            return type && itemTypes.includes(type.name.toLowerCase());
-          });
-          if (hasExcludedType) return false;
-        }
+      // Exclusion check (priority)
+      if (excludedTypeIds.length > 0) {
+        const hasExcludedType = excludedTypeIds.some((id) => {
+          const type = availableTypes.find((t) => t.id === id);
+          return type && itemTypes.includes(type.name.toLowerCase());
+        });
+        if (hasExcludedType) return false;
+      }
 
-        // Inclusion check
-        if (selectedTypeIds.length > 0) {
-          const hasSelectedType = selectedTypeIds.some((id) => {
-            const type = availableTypes.find((t) => t.id === id);
-            return type && itemTypes.includes(type.name.toLowerCase());
-          });
+      // Inclusion check
+      if (selectedTypeIds.length > 0) {
+        const hasSelectedType = selectedTypeIds.some((id) => {
+          const type = availableTypes.find((t) => t.id === id);
+          return type && itemTypes.includes(type.name.toLowerCase());
+        });
 
-          if (!hasSelectedType) return false;
-        }
+        if (!hasSelectedType) return false;
+      }
 
-        return true;
-      });
-    }
+      // 2. Client-side Search Refining (for robustness during debouncing/caching)
+      if (!searchQuery) return true;
 
-    if (!searchQuery) return currentItems;
-
-    const terms = searchQuery
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-
-    if (terms.length === 0) return currentItems;
-
-    return currentItems.filter((item) => {
       const title = item.title.toLowerCase();
-      // pre-split tags for exact matching
       const itemTags = (item.tags_list || "")
         .toLowerCase()
         .split(",")
         .map((t) => t.trim());
 
+      const terms = searchQuery
+        .toLowerCase()
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
       return terms.every((term) => {
         const isExclusion = term.startsWith("-");
-        let cleanTerm = (isExclusion ? term.slice(1) : term).toLowerCase();
+        let checkTerm = isExclusion ? term.slice(1) : term;
 
-        const isTagSearch = cleanTerm.startsWith(TAG_MARKER);
+        const isTagSearch = checkTerm.startsWith(TAG_MARKER);
         if (isTagSearch) {
-          cleanTerm = cleanTerm.slice(TAG_MARKER.length);
+          checkTerm = checkTerm.slice(TAG_MARKER.length);
         }
 
-        if (!cleanTerm) return true;
+        if (!checkTerm) return true;
 
         let match = false;
         if (isTagSearch) {
-          // Tag specific search
-          match = itemTags.includes(cleanTerm);
+          match = itemTags.includes(checkTerm);
         } else {
-          // Title OR Tag match
-          match = title.includes(cleanTerm) || itemTags.includes(cleanTerm);
+          match = title.includes(checkTerm) || itemTags.includes(checkTerm);
         }
 
         return isExclusion ? !match : match;
       });
-    });
+    };
+
+    return currentItems.filter(matchItem);
   });
 
   let visibleItems = $derived(filteredItems.slice(0, renderLimit));
@@ -148,7 +193,7 @@
   let fileCount = $derived(
     filteredItems.filter((i) => {
       return String(i.type).toLowerCase() !== "folder";
-    }).length
+    }).length,
   );
   let stabilizedAllIds = $derived(filteredItems.map((i) => i.id));
 
@@ -166,11 +211,21 @@
   async function loadFavorites(silent = false) {
     if (!silent) loading = true;
     try {
-      const fetchedItems = await window.electronAPI.library.getFavorites();
+      if (silent) {
+        skipItemAnimation = true;
+      }
+      const getFavorites = window.electronAPI.library.getFavorites as any;
+      const fetchedItems = await getFavorites(selectedRoot);
       items = sortFavorites(fetchedItems);
       await tick();
+      if (silent) {
+        setTimeout(() => {
+          skipItemAnimation = false;
+        }, 50);
+      }
     } catch (e) {
       console.error(e);
+      if (silent) skipItemAnimation = false;
     } finally {
       loading = false;
     }
@@ -184,7 +239,7 @@
 
   function handleItemClick(
     item: LibraryItem,
-    event?: MouseEvent | KeyboardEvent
+    event?: MouseEvent | KeyboardEvent,
   ) {
     if (selection.selectionMode || (event && event.ctrlKey)) {
       selection.toggle(item.id, filteredItems, event);
@@ -205,6 +260,8 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
+    if ($appState.currentView !== "favorites") return;
+
     if (e.key === "Escape") {
       if (showTagEditor) {
         closeTagEditor();
@@ -214,6 +271,193 @@
         closeTypeEditor();
         return;
       }
+
+      // Blur focused grid items
+      if (document.activeElement?.hasAttribute("data-nav-index")) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    }
+    // Global Grid Navigation
+    if (e.key.startsWith("Arrow") || e.key === "Enter" || e.key === " ") {
+      if (e.target instanceof HTMLInputElement) return;
+
+      // 1. Native scroll throttle
+      if (e.repeat && (e.key === "ArrowUp" || e.key === "ArrowDown")) return;
+
+      const items = visibleItems;
+      if (items.length === 0) return;
+
+      const focusedEl = document.activeElement as HTMLElement;
+      let currentIndex = -1;
+      let scanSuccess = false;
+
+      // 2. Identify selection
+      if (focusedEl?.hasAttribute("data-nav-index")) {
+        const container =
+          document.querySelector(".favorites-grid")?.parentElement;
+        if (container) {
+          const containerRect = container.getBoundingClientRect();
+          const itemRect = focusedEl.getBoundingClientRect();
+
+          const isVisible =
+            itemRect.bottom > containerRect.top &&
+            itemRect.top < containerRect.bottom;
+          const isHorizontalRepetition =
+            e.repeat && (e.key === "ArrowLeft" || e.key === "ArrowRight");
+
+          if (isHorizontalRepetition || isVisible) {
+            currentIndex = parseInt(
+              focusedEl.getAttribute("data-nav-index") || "-1",
+            );
+          } else {
+            // 3. Recovery logic
+            const viewportCenterY =
+              containerRect.top + containerRect.height / 2;
+            const isAtBottom =
+              container.scrollTop + container.clientHeight >=
+              container.scrollHeight - 50;
+            const isAtTop = container.scrollTop < 50;
+
+            let probeY = viewportCenterY;
+            if (isAtBottom) probeY = containerRect.bottom - 60;
+            if (isAtTop) probeY = containerRect.top + 60;
+
+            // a. Entry point
+            let probeX;
+            if (e.key === "ArrowLeft") {
+              probeX = containerRect.right - 40;
+            } else if (e.key === "ArrowRight") {
+              probeX = containerRect.left + 40;
+            } else {
+              probeX = itemRect.left + itemRect.width / 2;
+              if (probeX < containerRect.left || probeX > containerRect.right) {
+                probeX = containerRect.left + containerRect.width / 2;
+              }
+            }
+
+            // b. Row grouping
+            const allVisibleEl = Array.from(
+              container.querySelectorAll("[data-nav-index]"),
+            );
+            let anchorItem: {
+              index: number;
+              top: number;
+              bottom: number;
+            } | null = null;
+            let minDist = Infinity;
+
+            const candidates: { index: number; rect: DOMRect }[] = [];
+            for (const el of allVisibleEl) {
+              const rect = el.getBoundingClientRect();
+              const center = rect.top + rect.height / 2;
+              const dist = Math.abs(center - probeY);
+
+              if (dist < minDist) {
+                minDist = dist;
+                anchorItem = {
+                  index: parseInt(el.getAttribute("data-nav-index") || "-1"),
+                  top: rect.top,
+                  bottom: rect.bottom,
+                };
+              }
+              candidates.push({
+                index: parseInt(el.getAttribute("data-nav-index") || "-1"),
+                rect,
+              });
+            }
+
+            let bestRow: { index: number; left: number }[] = [];
+            if (anchorItem) {
+              const rowThreshold = (anchorItem.bottom - anchorItem.top) * 0.5;
+              for (const c of candidates) {
+                const overlap =
+                  Math.min(anchorItem.bottom, c.rect.bottom) -
+                  Math.max(anchorItem.top, c.rect.top);
+                if (overlap > rowThreshold) {
+                  bestRow.push({ index: c.index, left: c.rect.left });
+                }
+              }
+            }
+
+            if (bestRow && bestRow.length > 0) {
+              bestRow.sort((a, b) => a.left - b.left);
+              if (e.key === "ArrowLeft") {
+                currentIndex = bestRow[bestRow.length - 1].index;
+              } else if (e.key === "ArrowRight") {
+                currentIndex = bestRow[0].index;
+              } else {
+                const centerIdx = Math.floor((bestRow.length - 1) / 2);
+                currentIndex = bestRow[centerIdx].index;
+              }
+              scanSuccess = true;
+            }
+
+            if (!scanSuccess) {
+              if (isAtBottom) currentIndex = items.length - 1;
+              else currentIndex = 0;
+            }
+          }
+        }
+      }
+
+      let nextIndex = -1;
+
+      // 4. Calculate move
+      if (scanSuccess) {
+        nextIndex = currentIndex;
+      } else {
+        if (currentIndex === -1 && items.length > 0) {
+          nextIndex = 0;
+        } else if (currentIndex !== -1) {
+          const cols = calculateGridColumns();
+          if (e.key === "ArrowRight") nextIndex = currentIndex + 1;
+          else if (e.key === "ArrowLeft") nextIndex = currentIndex - 1;
+          else if (e.key === "ArrowDown") nextIndex = currentIndex + cols;
+          else if (e.key === "ArrowUp") nextIndex = currentIndex - cols;
+        }
+      }
+
+      if (currentIndex === -1 && nextIndex === -1 && items.length > 0) {
+        nextIndex = 0;
+      }
+
+      // 5. Apply move
+      if (nextIndex >= 0 && nextIndex < items.length) {
+        e.preventDefault();
+        const nextEl = document.querySelector(
+          `.favorites-grid [data-nav-index="${nextIndex}"]`,
+        ) as HTMLElement;
+        if (nextEl) {
+          nextEl.focus({ preventScroll: true });
+          nextEl.scrollIntoView({ behavior: "auto", block: "nearest" });
+        }
+      }
+    }
+  }
+
+  // Get grid columns based on breakpoints
+  function calculateGridColumns() {
+    const width = window.innerWidth;
+    if (gridSize === "small") {
+      if (width >= 1536) return 12;
+      if (width >= 1280) return 10;
+      if (width >= 1024) return 8;
+      if (width >= 768) return 6;
+      if (width >= 640) return 4;
+      return 3;
+    } else if (gridSize === "large") {
+      if (width >= 1536) return 6;
+      if (width >= 1280) return 5;
+      if (width >= 1024) return 4;
+      if (width >= 768) return 3;
+      return 2;
+    } else {
+      if (width >= 1536) return 8;
+      if (width >= 1280) return 6;
+      if (width >= 1024) return 5;
+      if (width >= 768) return 4;
+      if (width >= 640) return 3;
+      return 2;
     }
   }
 
@@ -225,10 +469,10 @@
     } else {
       // Surgical update for tags or favorite toggle to prevent full list reset
       const updatedItems = await Promise.all(
-        selection.ids.map((id) => window.electronAPI.library.getItem(id))
+        selection.ids.map((id) => window.electronAPI.library.getItem(id)),
       );
       const itemsMap = new Map(
-        updatedItems.filter(Boolean).map((i) => [i!.id, i!])
+        updatedItems.filter(Boolean).map((i) => [i!.id, i!]),
       );
 
       if (action === "favorite") {
@@ -240,19 +484,20 @@
             return true; // Keep if not in the updated set
           })
           .map((i) =>
-            itemsMap.get(i.id) ? { ...i, ...itemsMap.get(i.id) } : i
+            itemsMap.get(i.id) ? { ...i, ...itemsMap.get(i.id) } : i,
           );
       } else {
         // Just update metadata for tags
         items = sortFavorites(
           items.map((i) =>
-            itemsMap.get(i.id) ? { ...i, ...itemsMap.get(i.id) } : i
-          )
+            itemsMap.get(i.id) ? { ...i, ...itemsMap.get(i.id) } : i,
+          ),
         );
       }
     }
   }
 
+  // Get grid CSS classes
   function getGridClass(): string {
     switch (gridSize) {
       case "small":
@@ -287,10 +532,11 @@
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting && renderLimit < filteredItems.length) {
+          // Incrementally load more items as user scrolls
           renderLimit += 50;
         }
       },
-      { rootMargin: "500px" }
+      { rootMargin: "500px" },
     );
     observer.observe(loaderRef);
     return () => observer.disconnect();
@@ -306,11 +552,18 @@
           ? parseInt(all.blurR18Intensity)
           : 12;
 
-        // Surgical updates to avoid full item card re-renders
+        // Surgical updates to avoid unnecessary item card re-renders
         if (blurR18 !== newBlurR18) blurR18 = newBlurR18;
         if (blurR18Hover !== newBlurR18Hover) blurR18Hover = newBlurR18Hover;
         if (blurR18Intensity !== newBlurR18Intensity)
           blurR18Intensity = newBlurR18Intensity;
+
+        if (
+          all.librarySortOrder === "alphabetical" ||
+          all.librarySortOrder === "imported"
+        ) {
+          librarySortOrder = all.librarySortOrder as any;
+        }
       }
     } catch (e) {
       console.error("Failed to refresh settings", e);
@@ -339,31 +592,28 @@
   let selectedSearchIndex = $state(-1);
 
   let searchRequestId = 0;
-  let searchTimeout: ReturnType<typeof setTimeout>;
+  let autocompleteTimeout: ReturnType<typeof setTimeout>;
 
   async function handleSearchInput(e: Event) {
     const val = (e.target as HTMLInputElement).value;
-    // value bound to searchQuery already
+    searchQuery = val;
 
+    // Increment ID to prevent race conditions
     searchRequestId++;
     const currentRequestId = searchRequestId;
 
-    clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(async () => {
-      // Autocomplete logic
+    clearTimeout(autocompleteTimeout);
+    autocompleteTimeout = setTimeout(async () => {
       const terms = val.split(/,\s*/);
       const currentTerm = terms[terms.length - 1].trim();
 
       if (currentTerm.length > 0 && currentTerm !== "-") {
-        // Clean the term: Remove ZWSP (if any) and leading exclusion dash
-        let cleanTerm = currentTerm.replace(/\u200B/g, ""); // explicit unicode for safety
-        if (cleanTerm.startsWith("-")) {
-          cleanTerm = cleanTerm.slice(1);
-        }
+        let cleanTerm = currentTerm.replace(/\u200B/g, "");
+        if (cleanTerm.startsWith("-")) cleanTerm = cleanTerm.slice(1);
 
         const tags = await window.electronAPI.tags.search(cleanTerm);
 
-        // Race check
+        // Ensure response matches latest request
         if (searchRequestId === currentRequestId) {
           searchSuggestions = tags;
           showSearchSuggestions = tags.length > 0;
@@ -481,6 +731,7 @@
     }
   }
 
+  // Toggle type inclusion (click) or exclusion (double-click)
   function handleTypeClick(typeId: number) {
     const now = Date.now();
     const isDoubleClick = lastClickedId === typeId && now - lastClickTime < 300;
@@ -537,7 +788,7 @@
         await window.electronAPI.library.getItem(tagEditorItemId);
       if (updatedItem) {
         items = items.map((i) =>
-          i.id === updatedItem.id ? { ...i, ...updatedItem } : i
+          i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
         );
       }
     } catch (e) {
@@ -565,7 +816,7 @@
         await window.electronAPI.library.getItem(typeEditorItemId);
       if (updatedItem) {
         items = items.map((i) =>
-          i.id === updatedItem.id ? { ...i, ...updatedItem } : i
+          i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
         );
       }
     } catch (e) {
@@ -657,8 +908,8 @@
               // Update existing item
               items = sortFavorites(
                 items.map((i) =>
-                  i.id === updatedItem.id ? { ...i, ...updatedItem } : i
-                )
+                  i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
+                ),
               );
             } else {
               // Add new favorite to the list
@@ -675,11 +926,11 @@
           // Just merge the new fields.
           items = sortFavorites(
             items.map((i) =>
-              i.id === updatedItem.id ? { ...i, ...updatedItem } : i
-            )
+              i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
+            ),
           );
         }
-      }
+      },
     );
 
     const unsubscribeRefreshed = window.electronAPI.library.onRefreshed(() => {
@@ -879,7 +1130,16 @@
         d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
       />
     </svg>
-    <h1 class="text-2xl font-bold text-white">Favorites</h1>
+    <h1 class="text-2xl font-bold text-white mr-4">Favorites</h1>
+
+    <FolderSwitcher
+      currentRoot={selectedRoot}
+      sortOrder={librarySortOrder}
+      onSelect={(root) => {
+        selectedRoot = root;
+        loadFavorites(true);
+      }}
+    />
     <span
       role="status"
       title={itemCountHovered ? "Total files" : "Total items"}
@@ -1152,6 +1412,7 @@
   onscroll={() => {
     if (activeMenuId !== null) closeMenu();
     if (showTypeFilter) showTypeFilter = false;
+    if (showSearchSuggestions) showSearchSuggestions = false;
   }}
 >
   {#if loading}
@@ -1185,25 +1446,35 @@
       </p>
     </div>
   {:else}
-    <div class="grid {getGridClass()} gap-4">
-      {#each visibleItems as item (item.id)}
+    <div class="grid {getGridClass()} gap-4 favorites-grid scroll-smooth">
+      {#each visibleItems as item, idx (item.id)}
         <div
           role="button"
           tabindex="0"
-          class="flex flex-col group relative rounded-xl transition-[transform,shadow,border-color] duration-300 hover:scale-[1.02] hover:shadow-2xl hover:shadow-rose-500/10 hover:border-rose-500/50 text-left cursor-pointer bg-slate-900 border border-slate-700/50 focus:outline-none focus:border-slate-700/50 focus:ring-0 focus-visible:outline-none focus-visible:ring-0 select-none outline-none ring-0 overflow-hidden"
-          in:fly|local={{ y: 10, duration: 300 }}
+          data-nav-index={idx}
+          data-type={item.type}
+          data-item-id={item.id}
+          class="flex flex-col group relative rounded-xl transition-[transform,shadow,border-color] duration-300 hover:scale-[1.02] hover:shadow-2xl hover:shadow-rose-500/10 hover:border-rose-500/50 text-left cursor-pointer bg-slate-900 border border-slate-700/50 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 select-none outline-none ring-0 overflow-hidden"
+          in:fly|local={{
+            y: skipItemAnimation ? 0 : 10,
+            duration: skipItemAnimation ? 0 : 300,
+          }}
           style="z-index: {activeMenuId === item.id ? 50 : 'auto'}"
           onclick={(e: MouseEvent) => handleItemClick(item, e)}
           onmousedown={(e: MouseEvent) => e.shiftKey && e.preventDefault()}
           ondblclick={(e: MouseEvent) => handleItemClick(item, e)}
-          onkeydown={(e: KeyboardEvent) =>
-            e.key === "Enter" && handleItemClick(item, e)}
+          onkeydown={(e: KeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              handleItemClick(item, e);
+            }
+          }}
         >
           <!-- Selection Overlay -->
           {#if selection.selectionMode || selection.has(item.id)}
             <div
               class="absolute inset-0 z-40 rounded-xl transition-all duration-200 pointer-events-none {selection.has(
-                item.id
+                item.id,
               )
                 ? 'bg-blue-500/10 border-2 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.2)]'
                 : 'bg-blue-500/0 border-0'}"
@@ -1218,7 +1489,7 @@
               <div class="absolute top-2 left-2 p-1">
                 <div
                   class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-200 {selection.has(
-                    item.id
+                    item.id,
                   )
                     ? 'bg-blue-500 border-blue-500'
                     : 'bg-black/40 border-slate-400 group-hover:border-blue-400'}"
@@ -1462,7 +1733,7 @@
               <div class="absolute top-0 left-0 z-20">
                 <div
                   class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white {getStatusColor(
-                    item.reading_status
+                    item.reading_status,
                   )} rounded-br-lg shadow-lg"
                 >
                   {getStatusLabel(item.reading_status)}
@@ -1586,18 +1857,22 @@
 {/if}
 
 <style>
-  /* Aggressively nuke focus outlines and selection highlights */
+  /* Aggressively nuke focus outlines for general elements to keep clean UI */
   :global(*:focus),
-  :global(*:focus-visible),
-  :global(*:active) {
+  :global(*:focus-visible) {
     outline: none !important;
-    box-shadow: none !important;
   }
 
-  /* Restore focus rings only for keyboard-ready elements */
+  /* High-visibility selector for Grid Items (Keyboard Only) - Unified Blue Theme */
+  [role="button"]:focus-visible {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.4) !important;
+    z-index: 60;
+  }
+
   :global(input:focus),
-  :global(textarea:focus),
-  :global(select:focus) {
+  :global(textarea:focus) {
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2) !important;
   }
 

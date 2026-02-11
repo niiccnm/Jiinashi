@@ -8,11 +8,11 @@ import {
   shell,
   Menu,
   nativeTheme,
+  session,
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import { version } from "../package.json";
 
-// Force dark mode
 nativeTheme.themeSource = "dark";
 
 // Prevent white flash
@@ -22,11 +22,102 @@ app.commandLine.appendSwitch("force-dark-mode");
 if (process.platform === "win32") {
   app.commandLine.appendSwitch(
     "disable-features",
-    "CalculateNativeWinOcclusion"
+    "CalculateNativeWinOcclusion",
   );
 }
 
-// DevTools dark mode workaround (Chromium may still show light mode due to cached preferences)
+// Anti-detection flags for Cloudflare Turnstile
+app.commandLine.appendSwitch(
+  "disable-features",
+  "WebGPU,DawnExperimentalSubgroupLimits,AdapterPropertiesSubgroups",
+);
+app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
+app.commandLine.appendSwitch("disable-infobars");
+
+// Spoofed Chrome 132 User-Agent
+const GHOST_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
+app.userAgentFallback = GHOST_UA;
+app.commandLine.appendSwitch("referrer-policy", "unsafe-url");
+
+// Enforce browser identity across all sessions
+app.whenReady().then(async () => {
+  // Inherit system proxy (VPN, DNS) settings
+  try {
+    await session.defaultSession.setProxy({ mode: "system" });
+    console.log("[Proxy] System proxy mode enabled for default session");
+  } catch (e) {
+    console.error("[Proxy] Failed to set system proxy:", e);
+  }
+
+  // Allow unsafe-url referrer for anti-scraping sites
+  if ((session.defaultSession as any).setReferrerPolicy) {
+    (session.defaultSession as any).setReferrerPolicy("unsafe-url");
+  }
+
+  const setupSessionStealth = (sess: Electron.Session) => {
+    sess.webRequest.onBeforeSendHeaders((details, callback) => {
+      const url = details.url.toLowerCase();
+      const isNH = url.includes("nhentai.net");
+      const isEH = url.includes("e-hentai.org") || url.includes("exhentai.org");
+      // Include new Hitomi backend domain
+      const isHitomi =
+        url.includes("hitomi.la") ||
+        url.includes("gold-usergeneratedcontent.net");
+
+      if (isNH || isEH || isHitomi) {
+        details.requestHeaders["User-Agent"] = GHOST_UA;
+        details.requestHeaders["Sec-CH-UA"] =
+          '"Google Chrome";v="132", "Chromium";v="132", "Not:A-Brand";v="24"';
+        details.requestHeaders["Sec-CH-UA-Mobile"] = "?0";
+        details.requestHeaders["Sec-CH-UA-Platform"] = '"Windows"';
+        details.requestHeaders["Sec-CH-UA-Platform-Version"] = '"10.0.0"';
+        details.requestHeaders["Sec-CH-UA-Arch"] = '"x86"';
+        details.requestHeaders["Sec-CH-UA-Bitness"] = '"64"';
+        details.requestHeaders["Sec-CH-UA-Model"] = '""';
+        details.requestHeaders["Sec-CH-UA-Full-Version-List"] =
+          '"Google Chrome";v="132.0.6834.161", "Chromium";v="132.0.6834.161", "Not:A-Brand";v="24.0.0.0"';
+
+        if (
+          url.includes("i.nhentai.net") ||
+          url.includes("exhentai.org") ||
+          isHitomi
+        ) {
+          if (!details.requestHeaders["Referer"]) {
+            if (isNH)
+              details.requestHeaders["Referer"] = "https://nhentai.net/";
+            else if (isEH)
+              details.requestHeaders["Referer"] = "https://exhentai.org/";
+            else if (isHitomi)
+              details.requestHeaders["Referer"] = "https://hitomi.la/";
+          }
+        }
+      }
+      callback({ cancel: false, requestHeaders: details.requestHeaders });
+    });
+  };
+
+  setupSessionStealth(session.defaultSession);
+
+  // Apply stealth to solver session partitions
+  const commonPartitions = [
+    "persist:solver_nhentai",
+    "persist:solver_ehentai",
+    "persist:solver_exhentai",
+    "persist:solver_default",
+  ];
+  for (const p of commonPartitions) {
+    const partitionSession = session.fromPartition(p);
+    setupSessionStealth(partitionSession);
+    try {
+      await partitionSession.setProxy({ mode: "system" });
+    } catch (e) {
+      console.error(`[Proxy] Failed to set system proxy for ${p}:`, e);
+    }
+  }
+});
+
+// Force dark DevTools (Chromium caches light theme)
 app.on("browser-window-created", (_, window) => {
   window.webContents.on("devtools-opened", () => {
     nativeTheme.themeSource = "dark";
@@ -46,8 +137,10 @@ import {
 } from "./coverExtractor";
 import { ArchiveHandler } from "./archives/archive";
 import type { IArchiveHandler } from "./archives/archive";
+import { DownloaderManager } from "./downloader/manager";
 
-// Archive Cache
+let downloaderManager: DownloaderManager | null = null;
+
 interface CachedArchive {
   path: string;
   zip?: any;
@@ -60,14 +153,13 @@ interface CachedArchive {
 
 function getImageDimensions(
   buffer: Buffer,
-  ext: string
+  ext: string,
 ): { width: number; height: number } | null {
   try {
     const e = ext.toLowerCase();
 
     if (e === ".png") {
       if (buffer.length < 24) return null;
-      // PNG signature
       if (
         buffer[0] !== 0x89 ||
         buffer[1] !== 0x50 ||
@@ -96,7 +188,6 @@ function getImageDimensions(
       if (buffer.toString("ascii", 0, 4) !== "RIFF") return null;
       if (buffer.toString("ascii", 8, 12) !== "WEBP") return null;
 
-      // VP8X chunk
       let offset = 12;
       while (offset + 8 <= buffer.length) {
         const chunkType = buffer.toString("ascii", offset, offset + 4);
@@ -111,7 +202,6 @@ function getImageDimensions(
           if (width > 0 && height > 0) return { width, height };
           return null;
         }
-        // Padded size
         const padded = chunkSize + (chunkSize % 2);
         offset = chunkData + padded;
       }
@@ -127,13 +217,11 @@ function getImageDimensions(
           i += 1;
           continue;
         }
-        // Skip fill
         while (i < buffer.length && buffer[i] === 0xff) i += 1;
         if (i >= buffer.length) break;
         const marker = buffer[i];
         i += 1;
 
-        // Stand-alone markers
         if (marker === 0xd9 || marker === 0xda) break;
         if (i + 1 >= buffer.length) break;
         const len = buffer.readUInt16BE(i);
@@ -146,7 +234,6 @@ function getImageDimensions(
           (marker >= 0xcd && marker <= 0xcf);
 
         if (isSOF) {
-          // SOF layout
           if (i + 7 >= buffer.length) return null;
           const height = buffer.readUInt16BE(i + 3);
           const width = buffer.readUInt16BE(i + 5);
@@ -164,17 +251,17 @@ function getImageDimensions(
   return null;
 }
 
+// Archive Cache
 const ARCHIVE_CACHE_TIMEOUT = 60 * 1000; // 1 minute
 const archiveCache = new Map<string, CachedArchive>();
 
 function getCachedArchive(archivePath: string): CachedArchive | null {
   const cached = archiveCache.get(archivePath);
   if (cached) {
-    // Reset timer
     clearTimeout(cached.timer);
     cached.timer = setTimeout(
       () => closeCachedArchive(archivePath),
-      ARCHIVE_CACHE_TIMEOUT
+      ARCHIVE_CACHE_TIMEOUT,
     );
     cached.lastAccessed = Date.now();
     return cached;
@@ -187,9 +274,8 @@ function cacheArchive(
   zip?: any,
   rar?: IArchiveHandler,
   zipImageEntries?: string[],
-  rarEntries?: string[]
+  rarEntries?: string[],
 ) {
-  // Close existing
   const existing = archiveCache.get(archivePath);
   if (existing) {
     clearTimeout(existing.timer);
@@ -197,7 +283,7 @@ function cacheArchive(
 
   const timer = setTimeout(
     () => closeCachedArchive(archivePath),
-    ARCHIVE_CACHE_TIMEOUT
+    ARCHIVE_CACHE_TIMEOUT,
   );
 
   archiveCache.set(archivePath, {
@@ -217,11 +303,11 @@ async function getZipImageEntries(zip: any): Promise<string[]> {
     .filter(
       (e) =>
         /\.(jpg|jpeg|png|gif|webp)$/i.test((e as any).name) &&
-        !(e as any).isDirectory
+        !(e as any).isDirectory,
     )
     .map((e) => (e as any).name as string)
     .sort((a, b) =>
-      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
 }
 
@@ -246,7 +332,6 @@ function clearArchiveCache() {
     closeCachedArchive(path);
   }
 }
-// Database
 
 import {
   initDatabase,
@@ -277,6 +362,7 @@ import {
   getCategoryAliases,
   getAllTags,
   searchTags,
+  getTagByName,
   createTag,
   updateTag,
   deleteTag,
@@ -297,10 +383,20 @@ import {
   getAllHiddenPages,
   setPageVisibility,
   clearPageVisibility,
-  bulkSetContentType,
-  // Types
+  getDownloadHistoryByPath,
+  getAllDownloadHistory,
+  getLatestDownloadHistoryByUrl,
+  addDownloadHistory,
+  updateDownloadHistory,
+  hideFromQueue,
+  getDownloadLogs,
+  saveDownloadLogs,
+  ensureTag,
+  ensureCategory,
+  ensureContentType,
   getAllTypes,
   getAllTypesWithAliases,
+  getTypeByName,
   createType,
   updateType,
   deleteType,
@@ -310,10 +406,16 @@ import {
   getItemTypes,
   addItemTypes,
   removeItemTypes,
+  bulkSetContentType,
   bulkAddItemTypes,
   bulkRemoveItemTypes,
-} from "./database";
-import type { LibraryItem, Tag, Category, ContentType } from "./database";
+} from "./database/database";
+import type {
+  LibraryItem,
+  Tag,
+  Category,
+  ContentType,
+} from "./database/database";
 
 const LIBRARY_ROOTS_SETTING_KEY = "libraryRoots";
 
@@ -324,7 +426,7 @@ function readLibraryRoots(): string[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
-      (p): p is string => typeof p === "string" && p.trim().length > 0
+      (p): p is string => typeof p === "string" && p.trim().length > 0,
     );
   } catch {
     return [];
@@ -339,7 +441,7 @@ function rememberLibraryRoot(rootPath: string) {
   const resolved = path.resolve(rootPath);
   const existing = readLibraryRoots();
   const exists = existing.some(
-    (p) => path.resolve(p).toLowerCase() === resolved.toLowerCase()
+    (p) => path.resolve(p).toLowerCase() === resolved.toLowerCase(),
   );
 
   if (!exists) {
@@ -373,7 +475,6 @@ function inferLibraryRootsFromDb(): string[] {
 
 function isValidLibraryPath(targetPath: string): boolean {
   if (!targetPath) return false;
-  // Normalize target
   const normalizedTarget = path.resolve(targetPath).toLowerCase();
 
   // 1. Check against Library Roots
@@ -399,6 +500,11 @@ const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow() {
+  const standardUA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
+  // Set browser-grade UA to avoid Cloudflare detection loops
+  session.defaultSession.setUserAgent(standardUA);
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -406,7 +512,7 @@ function createWindow() {
     backgroundColor: "#030712", // Matches bg-gray-950
     icon: path.join(
       __dirname,
-      isDev ? "../public/icon.ico" : "../dist/icon.ico"
+      isDev ? "../public/icon.ico" : "../dist/icon.ico",
     ),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -417,8 +523,8 @@ function createWindow() {
     },
   });
 
-  // DevTools toggle
-  // mainWindow.webContents.openDevTools()
+  downloaderManager = new DownloaderManager(mainWindow);
+
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (
       isDev &&
@@ -430,15 +536,14 @@ function createWindow() {
     }
   });
 
-  // Register media protocol for specialized handling of local images
+  // Custom media:// protocol for local images
   protocol.handle("media", (request) => {
-    // Expected: media:///C:/path
     let filePath: string;
     try {
       const parsedUrl = new URL(request.url);
       filePath = decodeURIComponent(parsedUrl.pathname);
 
-      // On Windows, pathname might start with /C:/, we want C:/
+      // Strip leading slash on Windows (e.g., /C:/ -> C:/)
       if (
         process.platform === "win32" &&
         filePath.startsWith("/") &&
@@ -447,7 +552,6 @@ function createWindow() {
         filePath = filePath.slice(1);
       }
     } catch (e) {
-      // Fallback or error
       console.error("Failed to parse media URL:", request.url, e);
       return new Response("Bad Request", { status: 400 });
     }
@@ -457,7 +561,6 @@ function createWindow() {
 
     try {
       const url = pathToFileURL(filePath).toString();
-      // console.log('Resolved File URL:', url)
       return net.fetch(url);
     } catch (e) {
       console.error("Failed to fetch media:", filePath, e);
@@ -499,12 +602,9 @@ function createWindow() {
     }
   });
 
-  initAutoUpdater();
-
   initDatabase();
   initCoverCache();
 
-  // Register IPC handlers
   registerIpcHandlers();
 
   ipcMain.on("env:is-packaged", (event) => {
@@ -521,7 +621,6 @@ function createWindow() {
 function initAutoUpdater() {
   if (!mainWindow) return;
 
-  // Auto Updater Configuration
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
@@ -543,7 +642,6 @@ function initAutoUpdater() {
     }, 5000); // 5s to ensure everything is loaded
   }
 
-  // IPC Handlers for Update Management
   ipcMain.handle("update:test-event", (event, type) => {
     console.log(`[Update] Received test event: ${type}`);
     if (!isDev) return;
@@ -606,7 +704,6 @@ function initAutoUpdater() {
   ipcMain.handle("update:download", () => {
     if (isDev) {
       console.log("[Update] Manual download in Dev Mode: Starting simulation");
-      // Trigger the downloading simulation
       let progress = 0;
       const interval = setInterval(() => {
         progress += 5;
@@ -641,7 +738,7 @@ function initAutoUpdater() {
     autoUpdater.quitAndInstall();
   });
 
-  // Listener relay from electron-updater to renderer
+  // Relay updater events to renderer
   autoUpdater.on("checking-for-update", () => {
     mainWindow?.webContents.send("update:status", { status: "checking" });
   });
@@ -689,6 +786,52 @@ function initAutoUpdater() {
 // Store references to reader windows to prevent garbage collection
 const readerWindows = new Set<BrowserWindow>();
 
+// Store references to download logs windows to prevent garbage collection
+const downloadLogsWindows = new Set<BrowserWindow>();
+
+function createDownloadLogsWindow(taskId: number) {
+  const win = new BrowserWindow({
+    width: 900,
+    height: 700,
+    show: false,
+    title: `Download Logs - ${taskId}`,
+    icon: path.join(
+      __dirname,
+      isDev ? "../public/icon.ico" : "../dist/icon.ico",
+    ),
+    backgroundColor: "#030712",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      // @ts-ignore
+      paintWhenInitiallyHidden: true,
+    },
+  });
+
+  const query: any = { view: "download_logs", taskId: taskId.toString() };
+
+  if (isDev) {
+    const queryStr = new URLSearchParams(query).toString();
+    win.loadURL(`http://localhost:5173?${queryStr}`);
+  } else {
+    win.loadFile(path.join(__dirname, "../dist/index.html"), {
+      query: query,
+    });
+  }
+
+  downloadLogsWindows.add(win);
+
+  win.on("closed", () => {
+    downloadLogsWindows.delete(win);
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    require("electron").shell.openExternal(url);
+    return { action: "deny" };
+  });
+}
+
 function createReaderWindow(bookId: number, pageIndex?: number) {
   const win = new BrowserWindow({
     width: 1000,
@@ -697,7 +840,7 @@ function createReaderWindow(bookId: number, pageIndex?: number) {
     title: "Reader",
     icon: path.join(
       __dirname,
-      isDev ? "../public/icon.ico" : "../dist/icon.ico"
+      isDev ? "../public/icon.ico" : "../dist/icon.ico",
     ),
     backgroundColor: "#000000",
     webPreferences: {
@@ -709,8 +852,6 @@ function createReaderWindow(bookId: number, pageIndex?: number) {
     },
   });
 
-  // DevTools toggle
-  // win.webContents.openDevTools()
   win.webContents.on("before-input-event", (event, input) => {
     if (
       isDev &&
@@ -750,14 +891,12 @@ function createReaderWindow(bookId: number, pageIndex?: number) {
     readerWindows.delete(win);
   });
 
-  // Open external links in default browser
   win.webContents.setWindowOpenHandler(({ url }) => {
     require("electron").shell.openExternal(url);
     return { action: "deny" };
   });
 }
 
-// Helper function for scanning (extracted from IPC handler)
 type ScanProgressPayload = { count: number; item: LibraryItem | null };
 
 function createScanProgressEmitter() {
@@ -790,7 +929,7 @@ function createScanProgressEmitter() {
 async function scanLibraryFolder(
   dirPath: string,
   parentItemId: number | null,
-  progress?: ReturnType<typeof createScanProgressEmitter>
+  progress?: ReturnType<typeof createScanProgressEmitter>,
 ): Promise<number> {
   const supportedExtensions = [
     ".cbz",
@@ -815,12 +954,11 @@ async function scanLibraryFolder(
   try {
     const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
 
-    // Sort files naturally
     const sortedEntries = entries.sort((a, b) =>
       a.name.localeCompare(b.name, undefined, {
         numeric: true,
         sensitivity: "base",
-      })
+      }),
     );
 
     for (const entry of sortedEntries) {
@@ -841,15 +979,11 @@ async function scanLibraryFolder(
       try {
         if (entry.isFile()) {
           const ext = path.extname(file).toLowerCase();
-
-          // Ignore specific file types or known junk
           if (ext === ".file" || ext === ".ini" || ext === ".db") continue;
 
-          // Check if already exists
           const existingItem = getItemByPath(filePath);
           if (existingItem) {
-            // Scan/rescan should only process items that are not already in the database.
-            // Skipping existing items also prevents expensive cover extraction from making rescans feel frozen.
+            // Skip items already in DB (avoids redundant cover extraction)
             continue;
           }
 
@@ -857,19 +991,44 @@ async function scanLibraryFolder(
             let pageCount = 0;
             let coverPath: string | null = null;
 
-            // Archive info
+            let archiveInfo: any = null;
+
+            // Read sidecar metadata, then delete it
+            const sidecarPath = path.join(
+              path.dirname(filePath),
+              path.basename(filePath, path.extname(filePath)) + ".info.json",
+            );
+            if (fs.existsSync(sidecarPath)) {
+              try {
+                archiveInfo = JSON.parse(fs.readFileSync(sidecarPath, "utf-8"));
+                // Delete after read (user doesn't want it persisted)
+                fs.unlinkSync(sidecarPath);
+                console.log(
+                  `[Scanner] Consumed and removed metadata sidecar: ${sidecarPath}`,
+                );
+              } catch (e) {}
+            }
+
+            // Read archive contents and internal metadata
             if (ext === ".cbz" || ext === ".zip") {
               try {
                 const zip = new StreamZip.async({ file: filePath });
                 const entries = await zip.entries();
                 const imageEntries = Object.values(entries).filter(
                   (e) =>
-                    /\.(jpg|jpeg|png|gif|webp)$/i.test(e.name) && !e.isDirectory
+                    /\.(jpg|jpeg|png|gif|webp)$/i.test(e.name) &&
+                    !e.isDirectory,
                 );
                 pageCount = imageEntries.length;
-                await zip.close();
 
-                // Extract cover image
+                try {
+                  const infoEntry = await zip.entryData("info.json");
+                  if (infoEntry) {
+                    archiveInfo = JSON.parse(infoEntry.toString());
+                  }
+                } catch (e) {}
+
+                await zip.close();
                 coverPath = await extractCover(filePath);
               } catch (e) {
                 console.error("Failed to read zip archive:", filePath, e);
@@ -880,9 +1039,15 @@ async function scanLibraryFolder(
                 const handler = await ArchiveHandler.open(filePath);
                 const entries = await handler.getEntries();
                 pageCount = entries.length;
-                handler.close();
 
-                // Extract cover image
+                try {
+                  const infoBuffer = await handler.getFile("info.json");
+                  if (infoBuffer) {
+                    archiveInfo = JSON.parse(infoBuffer.toString());
+                  }
+                } catch (e) {}
+
+                handler.close();
                 coverPath = await extractCover(filePath);
               } catch (e) {
                 console.error("Failed to read rar archive:", filePath, e);
@@ -902,15 +1067,125 @@ async function scanLibraryFolder(
               last_read_at: null,
             });
             addedCount++;
+
+            // Apply site metadata as tags
+            try {
+              const strict = getSetting("strictImport") !== "false"; // Default to true
+              const tagIds: number[] = [];
+
+              // In strict mode, we ONLY use existing tags. We do NOT create new ones.
+              // In lax mode, we create Artist/Parody categories and tags as needed.
+              const artistCatId = strict ? null : ensureCategory("Artist");
+              const parodyCatId = strict ? null : ensureCategory("Parody");
+
+              // 1. Prioritize Metadata from info.json (inside archive)
+              if (archiveInfo) {
+                if (archiveInfo.tags && Array.isArray(archiveInfo.tags)) {
+                  for (const t of archiveInfo.tags) {
+                    const clean = t.toLowerCase().trim();
+                    const parts = clean.split(":");
+                    const nameOnly =
+                      parts.length > 1 ? parts[1].trim() : parts[0].trim();
+
+                    const tag = getTagByName(clean) || getTagByName(nameOnly);
+                    if (tag && !tagIds.includes(tag.id)) {
+                      tagIds.push(tag.id);
+                    }
+                  }
+                }
+                if (archiveInfo.artist) {
+                  const names = archiveInfo.artist
+                    .split(",")
+                    .map((s: any) => s.trim())
+                    .filter(Boolean);
+                  for (const n of names) {
+                    const tag = getTagByName(n);
+                    if (tag && !tagIds.includes(tag.id)) tagIds.push(tag.id);
+                    else if (!tag && !strict && artistCatId !== null)
+                      tagIds.push(ensureTag(n, artistCatId));
+                  }
+                }
+                if (archiveInfo.parody) {
+                  const names = archiveInfo.parody
+                    .split(",")
+                    .map((s: any) => s.trim())
+                    .filter(Boolean);
+                  for (const n of names) {
+                    const tag = getTagByName(n);
+                    if (tag && !tagIds.includes(tag.id)) tagIds.push(tag.id);
+                    else if (!tag && !strict && parodyCatId !== null)
+                      tagIds.push(ensureTag(n, parodyCatId));
+                  }
+                }
+              }
+
+              // 2. Fallback to Download History metadata
+              const history = getDownloadHistoryByPath(filePath);
+
+              if (tagIds.length === 0) {
+                if (history) {
+                  if (history.artist) {
+                    const tag = getTagByName(history.artist);
+                    if (tag) tagIds.push(tag.id);
+                    else if (!strict && artistCatId !== null)
+                      tagIds.push(ensureTag(history.artist, artistCatId));
+                  }
+                  if (history.parody) {
+                    const tag = getTagByName(history.parody);
+                    if (tag) tagIds.push(tag.id);
+                    else if (!strict && parodyCatId !== null)
+                      tagIds.push(ensureTag(history.parody, parodyCatId));
+                  }
+                }
+              }
+
+              if (tagIds.length > 0) {
+                addItemTags(newItemId, tagIds);
+                console.log(
+                  `[Scanner] Applied ${tagIds.length} bridge tags to ${filePath}`,
+                );
+              }
+
+              // 3. Process Content Type (category)
+              const contentType =
+                archiveInfo?.contentType || history?.content_type;
+              console.log(
+                `[Scanner] Metadata for ${filePath}: Tags=${tagIds.length}, Type=${contentType}`,
+              );
+              if (contentType) {
+                if (strict) {
+                  const existingType = getTypeByName(contentType);
+                  if (existingType) {
+                    bulkAddItemTypes([newItemId], [existingType.id]);
+                    bulkSetContentType([newItemId], existingType.name);
+                    console.log(
+                      `[Scanner] Applied Content Type Badge: ${existingType.name}`,
+                    );
+                  } else {
+                    console.log(
+                      `[Scanner] Skipped unknown Content Type "${contentType}" (strict mode).`,
+                    );
+                  }
+                } else {
+                  const typeId = ensureContentType(contentType);
+                  bulkAddItemTypes([newItemId], [typeId]);
+                  bulkSetContentType([newItemId], contentType);
+                  console.log(
+                    `[Scanner] Applied Content Type Badge: ${contentType}`,
+                  );
+                }
+              }
+            } catch (bridgeErr) {
+              console.error("[Scanner] Metadata bridge failed:", bridgeErr);
+            }
+
             const newItem = getItemById(newItemId) ?? getItemByPath(filePath);
             if (newItem && progress) {
               progress.onAdded(newItem);
             }
-
-            // Small delay to allow UI updates
             await new Promise((resolve) => setTimeout(resolve, 0));
           } else if (imageExtensions.includes(ext)) {
-            // Individual image file - the file itself is the cover
+            // Individual image is the cover
             addItem({
               path: filePath,
               title: path.basename(file, ext),
@@ -928,16 +1203,13 @@ async function scanLibraryFolder(
             if (newItem && progress) {
               progress.onAdded(newItem);
             }
-            // Small delay to allow UI updates
             await new Promise((resolve) => setTimeout(resolve, 0));
           }
         } else if (entry.isDirectory()) {
-          // Check if already exists
           let existingFolder = getItemByPath(filePath);
           let folderId: number;
 
           if (!existingFolder) {
-            // Folder cover
             const folderCover = await extractCoverFromFolder(filePath);
 
             folderId = addItem({
@@ -959,18 +1231,12 @@ async function scanLibraryFolder(
             if (newFolder && progress) {
               progress.onAdded(newFolder);
             }
-
-            // Small delay to allow UI updates
             await new Promise((resolve) => setTimeout(resolve, 0));
           } else {
             console.log("  -> Folder exists in DB:", existingFolder.id);
             folderId = existingFolder.id;
           }
 
-          // Recursion
-          console.log(
-            `  -> Recursing into "${file}" with Parent ID: ${folderId}`
-          );
           addedCount += await scanLibraryFolder(filePath, folderId, progress);
         }
       } catch (fileErr) {
@@ -985,6 +1251,7 @@ async function scanLibraryFolder(
 }
 
 function broadcastItemUpdate(id: number) {
+  // Broadcast item update to all windows
   const updatedItem = getItemById(id);
   if (!updatedItem) return;
   for (const win of BrowserWindow.getAllWindows()) {
@@ -993,7 +1260,6 @@ function broadcastItemUpdate(id: number) {
 }
 
 function registerIpcHandlers() {
-  // Dialog handlers
   ipcMain.handle("dialog:selectFolder", async () => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -1018,12 +1284,18 @@ function registerIpcHandlers() {
         const progress = createScanProgressEmitter();
         const count = await scanLibraryFolder(folderPath, parentId, progress);
         progress.flush();
+
+        // Refresh UI after scan
+        BrowserWindow.getAllWindows().forEach((w) => {
+          w.webContents.send("library:refreshed");
+        });
+
         return { success: true, count };
       } catch (e: any) {
         console.error("Scan error:", e);
         return { success: false, error: e.message };
       }
-    }
+    },
   );
 
   ipcMain.handle("library:rescan", async () => {
@@ -1043,6 +1315,12 @@ function registerIpcHandlers() {
         totalAdded += await scanLibraryFolder(rootPath, null, progress);
       }
       progress.flush();
+
+      // Notify UI after rescan completes
+      BrowserWindow.getAllWindows().forEach((w) => {
+        w.webContents.send("library:refreshed");
+      });
+
       return { success: true, count: totalAdded };
     } catch (e: any) {
       console.error("Rescan error:", e);
@@ -1050,13 +1328,42 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle("library:getItems", (_, parentId: number | null = null) => {
-    return getAllItems(parentId);
-  });
+  ipcMain.handle(
+    "library:getItems",
+    (_, parentId: number | null = null, rootPath?: string) => {
+      console.log(
+        `[library:getItems] parentId: ${parentId}, rootPath: ${rootPath}`,
+      );
+      return getAllItems(parentId, rootPath);
+    },
+  );
 
-  ipcMain.handle("library:searchItems", (_, query: string) => {
-    return searchItems(query);
-  });
+  ipcMain.handle(
+    "library:searchItems",
+    (
+      _,
+      query: string,
+      options?: {
+        folderId?: number | null;
+        favoritesOnly?: boolean;
+        root?: string;
+      },
+    ) => {
+      let rootPath = options?.root;
+
+      if (options?.folderId) {
+        const folder = getItemById(options.folderId);
+        if (folder) {
+          rootPath = folder.path;
+        }
+      }
+
+      return searchItems(query, {
+        rootPath,
+        favoritesOnly: options?.favoritesOnly,
+      });
+    },
+  );
 
   ipcMain.handle("library:getItem", (_, id: number) => {
     return getItemById(id);
@@ -1064,6 +1371,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle("reader:openWindow", (_, id: number, pageIndex?: number) => {
     createReaderWindow(id, pageIndex);
+  });
+
+  ipcMain.handle("downloader:openLogsWindow", (_, taskId: number) => {
+    createDownloadLogsWindow(taskId);
   });
 
   ipcMain.handle("library:clear", () => {
@@ -1079,8 +1390,8 @@ function registerIpcHandlers() {
     return true;
   });
 
-  ipcMain.handle("library:getFavorites", () => {
-    return getFavorites();
+  ipcMain.handle("library:getFavorites", (_, rootPath?: string) => {
+    return getFavorites(rootPath);
   });
 
   ipcMain.handle("library:getRecent", (_, limit: number = 20) => {
@@ -1104,7 +1415,7 @@ function registerIpcHandlers() {
     (_, id: number, updates: Partial<LibraryItem>) => {
       updateItem(id, updates);
       return true;
-    }
+    },
   );
 
   ipcMain.handle("library:deleteItem", async (_, id: number) => {
@@ -1119,7 +1430,7 @@ function registerIpcHandlers() {
         console.error(
           "Failed to remember library root during delete:",
           item.path,
-          e
+          e,
         );
       }
     }
@@ -1186,7 +1497,7 @@ function registerIpcHandlers() {
       } catch (e: any) {
         return { success: false, error: e.message };
       }
-    }
+    },
   );
 
   ipcMain.handle("library:getCover", (_, coverPath: string) => {
@@ -1201,7 +1512,7 @@ function registerIpcHandlers() {
   ipcMain.handle(
     "tags:create",
     (_, name: string, categoryId: number | null, description: string | null) =>
-      createTag(name, categoryId, description)
+      createTag(name, categoryId, description),
   );
   ipcMain.handle("tags:update", (_, id: number, updates: Partial<Tag>) => {
     updateTag(id, updates);
@@ -1223,19 +1534,18 @@ function registerIpcHandlers() {
     return getTagAliases(tagId);
   });
 
-  // Category Handlers
   ipcMain.handle("categories:getAll", () => getAllCategories());
   ipcMain.handle(
     "categories:create",
     (_, name: string, description: string | null) =>
-      createCategory(name, description)
+      createCategory(name, description),
   );
   ipcMain.handle(
     "categories:update",
     (_, id: number, updates: Partial<Category>) => {
       updateCategory(id, updates);
       return true;
-    }
+    },
   );
   ipcMain.handle("categories:delete", (_, id: number) => {
     deleteCategory(id);
@@ -1246,27 +1556,26 @@ function registerIpcHandlers() {
     (_, catId: number, aliases: string[]) => {
       addCategoryAliases(catId, aliases);
       return true;
-    }
+    },
   );
   ipcMain.handle(
     "categories:removeAlias",
     (_, catId: number, alias: string) => {
       removeCategoryAlias(catId, alias);
       return true;
-    }
+    },
   );
   ipcMain.handle("categories:getAliases", (_, catId: number) => {
     return getCategoryAliases(catId);
   });
 
-  // Item Tag Handlers
   ipcMain.handle(
     "library:addItemTags",
     (_, itemId: number, tagIds: number[]) => {
       addItemTags(itemId, tagIds);
       broadcastItemUpdate(itemId);
       return true;
-    }
+    },
   );
   ipcMain.handle(
     "library:removeItemTags",
@@ -1274,13 +1583,12 @@ function registerIpcHandlers() {
       removeItemTags(itemId, tagIds);
       broadcastItemUpdate(itemId);
       return true;
-    }
+    },
   );
   ipcMain.handle("library:getItemTags", (_, itemId: number) => {
     return getItemTags(itemId);
   });
 
-  // Library Roots
   ipcMain.handle("library:getRoots", () => {
     return readLibraryRoots();
   });
@@ -1290,7 +1598,7 @@ function registerIpcHandlers() {
       const current = readLibraryRoots();
       const normalizedPath = path.resolve(rootPath).toLowerCase();
       const newRoots = current.filter(
-        (r) => path.resolve(r).toLowerCase() !== normalizedPath
+        (r) => path.resolve(r).toLowerCase() !== normalizedPath,
       );
 
       if (newRoots.length !== current.length) {
@@ -1312,103 +1620,173 @@ function registerIpcHandlers() {
     }
   });
 
-  // Backup
-  ipcMain.handle("library:backup", async () => {
-    if (!mainWindow) return null;
+  ipcMain.handle(
+    "library:backup",
+    async (
+      _,
+      options?: {
+        includeDownloadHistory?: boolean;
+        includeDownloadLogs?: boolean;
+      },
+    ) => {
+      if (!mainWindow) return null;
 
-    // Save location
-    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
-      title: "Save Library Backup",
-      defaultPath: `jiinashi-backup-${
-        new Date().toISOString().split("T")[0]
-      }.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
+      const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: "Save Library Backup",
+        defaultPath: `jiinashi-backup-${
+          new Date().toISOString().split("T")[0]
+        }.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
 
-    if (canceled || !filePath) return { success: false, error: "Cancelled" };
+      if (canceled || !filePath) return { success: false, error: "Cancelled" };
 
-    try {
-      // Gather data
-      const roots = readLibraryRoots();
-      const allItems = getAllItemsFlat();
+      try {
+        const roots = readLibraryRoots();
+        const allItems = getAllItemsFlat();
 
-      const allHiddenPages = getAllHiddenPages();
+        const allHiddenPages = getAllHiddenPages();
 
-      const backupItems = allItems
-        .filter(
-          (item) =>
-            item.reading_status !== "unread" ||
-            item.is_favorite ||
-            item.current_page > 0 ||
-            (allHiddenPages[item.id] && allHiddenPages[item.id].length > 0)
-        )
-        .map((item) => {
-          // Relative path
-          let relativePath = item.path;
-          let matchedRoot = false;
+        const rootNames = roots.map((r) => path.basename(r));
 
-          const allRoots = roots.map((r) => ({
-            original: r,
-            norm: r.toLowerCase().replace(/\\/g, "/"),
-          }));
-          // Sort roots by length descending to match deepest possible root first
-          allRoots.sort((a, b) => b.norm.length - a.norm.length);
+        const backupItems = allItems
+          .filter(
+            (item) =>
+              item.reading_status !== "unread" ||
+              item.is_favorite ||
+              item.current_page > 0 ||
+              (allHiddenPages[item.id] && allHiddenPages[item.id].length > 0),
+          )
+          .map((item) => {
+            let relativePath = item.path;
+            let matchedRootIndex: number | undefined = undefined;
 
-          const normP = item.path.toLowerCase().replace(/\\/g, "/");
-          for (const root of allRoots) {
-            if (normP.startsWith(root.norm)) {
-              const rel = path
-                .relative(root.original, item.path)
-                .replace(/\\/g, "/");
-              // Ensure it's not a sibling match (e.g. Manga vs MangaVids)
-              if (!rel.startsWith("..")) {
-                relativePath = rel;
-                matchedRoot = true;
-                break;
+            const allRoots = roots.map((r, index) => ({
+              original: r,
+              norm: r.toLowerCase().replace(/\\/g, "/"),
+              index,
+            }));
+            // Match deepest possible root first
+            allRoots.sort((a, b) => b.norm.length - a.norm.length);
+
+            const normP = item.path.toLowerCase().replace(/\\/g, "/");
+            for (const root of allRoots) {
+              if (normP.startsWith(root.norm)) {
+                const rel = path
+                  .relative(root.original, item.path)
+                  .replace(/\\/g, "/");
+                // Ensure it's not a sibling match
+                if (!rel.startsWith("..")) {
+                  relativePath = rel;
+                  matchedRootIndex = root.index;
+                  break;
+                }
               }
             }
-          }
 
-          if (!matchedRoot) {
-            // Fallback for unknown root
-            console.warn(`Item ${item.path} not under any known library root.`);
-          }
+            if (matchedRootIndex === undefined) {
+              // Fallback for unknown root
+              console.warn(
+                `Item ${item.path} not under any known library root.`,
+              );
+            }
 
-          return {
-            relativePath,
-            isFavorite: item.is_favorite,
-            readingStatus: item.reading_status,
-            currentPage: item.current_page,
-            lastReadAt: item.last_read_at,
-            hiddenPages: allHiddenPages[item.id] || [],
-          };
-        });
+            return {
+              relativePath,
+              rootIndex: matchedRootIndex,
+              isFavorite: item.is_favorite,
+              readingStatus: item.reading_status,
+              currentPage: item.current_page,
+              lastReadAt: item.last_read_at,
+              hiddenPages: allHiddenPages[item.id] || [],
+            };
+          });
 
-      // Gather settings to include in backup
-      const blurSettings: Record<string, string | null> = {
-        blurR18: getSetting("blurR18"),
-        blurR18Hover: getSetting("blurR18Hover"),
-        blurR18Intensity: getSetting("blurR18Intensity"),
-      };
+        // Gather settings to include in backup
+        const blurSettings: Record<string, string | null> = {
+          blurR18: getSetting("blurR18"),
+          blurR18Hover: getSetting("blurR18Hover"),
+          blurR18Intensity: getSetting("blurR18Intensity"),
+        };
 
-      const backupData = {
-        version: 1,
-        createdAt: new Date().toISOString(),
-        items: backupItems,
-        settings: blurSettings,
-      };
+        // Buffer download history (default: ON unless explicitly false)
+        let downloadHistoryData: any[] = [];
+        if (options?.includeDownloadHistory !== false) {
+          const history = getAllDownloadHistory();
+          downloadHistoryData = history.map((entry) => {
+            // Make file_path relative to roots if possible
+            let relativeFilePath = entry.file_path;
+            if (entry.file_path) {
+              const normFilePath = entry.file_path
+                .toLowerCase()
+                .replace(/\\/g, "/");
+              const allRoots = roots.map((r, index) => ({
+                original: r,
+                norm: r.toLowerCase().replace(/\\/g, "/"),
+                index,
+              }));
+              allRoots.sort((a, b) => b.norm.length - a.norm.length);
 
-      await fs.promises.writeFile(
-        filePath,
-        JSON.stringify(backupData, null, 2),
-        "utf-8"
-      );
-      return { success: true, count: backupItems.length };
-    } catch (e: any) {
-      console.error("Backup error:", e);
-      return { success: false, error: e.message };
-    }
-  });
+              for (const root of allRoots) {
+                if (normFilePath.startsWith(root.norm)) {
+                  const rel = path
+                    .relative(root.original, entry.file_path)
+                    .replace(/\\/g, "/");
+                  if (!rel.startsWith("..")) {
+                    relativeFilePath = rel;
+                    break;
+                  }
+                }
+              }
+            }
+
+            return {
+              url: entry.url,
+              title: entry.title,
+              status: entry.status,
+              source: entry.source,
+              cover_url: entry.cover_url,
+              artist: entry.artist,
+              parody: entry.parody,
+              content_type: entry.content_type,
+              added_at: entry.added_at,
+              completed_at: entry.completed_at,
+              file_path: relativeFilePath,
+              error_message: entry.error_message,
+              hidden_from_queue: !!entry.hidden_from_queue,
+              logs: options?.includeDownloadLogs
+                ? getDownloadLogs(entry.id)
+                : [],
+            };
+          });
+        }
+
+        const backupData = {
+          createdAt: new Date().toISOString(),
+          roots: rootNames,
+          items: backupItems,
+          settings: blurSettings,
+          ...(downloadHistoryData.length > 0 && {
+            downloadHistory: downloadHistoryData,
+          }),
+        };
+
+        await fs.promises.writeFile(
+          filePath,
+          JSON.stringify(backupData, null, 2),
+          "utf-8",
+        );
+        return {
+          success: true,
+          count: backupItems.length,
+          historyCount: downloadHistoryData.length,
+        };
+      } catch (e: any) {
+        console.error("Backup error:", e);
+        return { success: false, error: e.message };
+      }
+    },
+  );
 
   ipcMain.handle("library:exportTags", async (_, options) => {
     if (!mainWindow) return null;
@@ -1428,19 +1806,28 @@ function registerIpcHandlers() {
       if (!exportData) throw new Error("Failed to collect export data");
 
       const roots = readLibraryRoots();
+      const rootNames = roots.map((r) => path.basename(r));
 
       // Normalize paths for portability
       const normalizedTagItems: Record<string, string[]> = {};
+      const tagItemRootIndices: Record<string, number[]> = {};
+
       for (const [tag, paths] of Object.entries(
-        exportData.tagItems as Record<string, string[]>
+        exportData.tagItems as Record<string, string[]>,
       )) {
-        normalizedTagItems[tag] = paths.map((p: string) => {
+        normalizedTagItems[tag] = [];
+        tagItemRootIndices[tag] = [];
+
+        for (const p of paths) {
           let relative = p;
+          let matchedRootIndex: number | undefined = undefined;
+
           const normP = p.toLowerCase().replace(/\\/g, "/");
           const sortedRoots = roots
-            .map((r) => ({
+            .map((r, index) => ({
               original: r,
               norm: r.toLowerCase().replace(/\\/g, "/"),
+              index,
             }))
             .sort((a, b) => b.norm.length - a.norm.length);
 
@@ -1449,27 +1836,37 @@ function registerIpcHandlers() {
               const rel = path.relative(root.original, p).replace(/\\/g, "/");
               if (!rel.startsWith("..")) {
                 relative = rel;
+                matchedRootIndex = root.index;
                 break;
               }
             }
           }
-          return relative;
-        });
+          normalizedTagItems[tag].push(relative);
+          tagItemRootIndices[tag].push(matchedRootIndex ?? -1);
+        }
       }
 
       // Normalize typeItems paths for portability
       const normalizedTypeItems: Record<string, string[]> = {};
+      const typeItemRootIndices: Record<string, number[]> = {};
+
       if (exportData.typeItems) {
         for (const [typeName, paths] of Object.entries(
-          exportData.typeItems as Record<string, string[]>
+          exportData.typeItems as Record<string, string[]>,
         )) {
-          normalizedTypeItems[typeName] = paths.map((p: string) => {
+          normalizedTypeItems[typeName] = [];
+          typeItemRootIndices[typeName] = [];
+
+          for (const p of paths) {
             let relative = p;
+            let matchedRootIndex: number | undefined = undefined;
+
             const normP = p.toLowerCase().replace(/\\/g, "/");
             const sortedRoots = roots
-              .map((r) => ({
+              .map((r, index) => ({
                 original: r,
                 norm: r.toLowerCase().replace(/\\/g, "/"),
+                index,
               }))
               .sort((a, b) => b.norm.length - a.norm.length);
 
@@ -1478,29 +1875,34 @@ function registerIpcHandlers() {
                 const rel = path.relative(root.original, p).replace(/\\/g, "/");
                 if (!rel.startsWith("..")) {
                   relative = rel;
+                  matchedRootIndex = root.index;
                   break;
                 }
               }
             }
-            return relative;
-          });
+            normalizedTypeItems[typeName].push(relative);
+            typeItemRootIndices[typeName].push(matchedRootIndex ?? -1);
+          }
         }
       }
 
       const finalData = {
         version: 1,
         createdAt: new Date().toISOString(),
+        roots: rootNames,
         categories: exportData.categories,
         tags: exportData.tags,
         tagItems: normalizedTagItems,
+        tagItemRootIndices,
         types: exportData.types,
         typeItems: normalizedTypeItems,
+        typeItemRootIndices,
       };
 
       await fs.promises.writeFile(
         filePath,
         JSON.stringify(finalData, null, 2),
-        "utf-8"
+        "utf-8",
       );
       return { success: true };
     } catch (e: any) {
@@ -1528,11 +1930,14 @@ function registerIpcHandlers() {
       const content = await fs.promises.readFile(filePathToUse, "utf-8");
       const data = JSON.parse(content) as {
         version: number;
+        roots?: string[];
         categories?: any[];
         tags?: any[];
         tagItems?: Record<string, string[]>;
+        tagItemRootIndices?: Record<string, number[]>;
         types?: any[];
         typeItems?: Record<string, string[]>;
+        typeItemRootIndices?: Record<string, number[]>;
       };
 
       if (
@@ -1546,7 +1951,7 @@ function registerIpcHandlers() {
         return { success: false, error: "Invalid export file format" };
       }
 
-      const roots = readLibraryRoots();
+      const currentRoots = readLibraryRoots();
 
       // 1. Merge Categories
       const categoryMap: Record<string, number> = {}; // Name -> Local ID
@@ -1594,21 +1999,51 @@ function registerIpcHandlers() {
             tagMap[tagName] || getAllTags().find((t) => t.name === tagName)?.id;
           if (!localTagId) continue;
 
-          for (const relPath of relPaths) {
+          const rootIndices = data.tagItemRootIndices?.[tagName];
+
+          for (let i = 0; i < relPaths.length; i++) {
+            const relPath = relPaths[i];
+            const rootIndex = rootIndices?.[i];
             const platformRelative = relPath.replace(/\//g, path.sep);
 
-            // Prioritize items that actually exist on disk (Fix for Relocation duplicates)
             let itemToUpdate: LibraryItem | null = null;
 
-            for (const root of roots) {
-              const candidatePath = path.join(root, platformRelative);
-              const item = getItemByPath(candidatePath);
-              if (item) {
-                if (fs.existsSync(item.path)) {
+            // Precision matching
+            if (
+              data.roots &&
+              rootIndex !== undefined &&
+              rootIndex !== -1 &&
+              data.roots[rootIndex]
+            ) {
+              const exportedRootName = data.roots[rootIndex];
+              const localRootMatch = currentRoots.find(
+                (r) => path.basename(r) === exportedRootName,
+              );
+
+              if (localRootMatch) {
+                const candidatePath = path.join(
+                  localRootMatch,
+                  platformRelative,
+                );
+                const item = getItemByPath(candidatePath);
+                if (item) {
                   itemToUpdate = item;
-                  break; // Found the live one
-                } else if (!itemToUpdate) {
-                  itemToUpdate = item; // Fallback to ghost record
+                }
+              }
+            }
+
+            // Fallback (or if precision failed)
+            if (!itemToUpdate) {
+              for (const root of currentRoots) {
+                const candidatePath = path.join(root, platformRelative);
+                const item = getItemByPath(candidatePath);
+                if (item) {
+                  if (fs.existsSync(item.path)) {
+                    itemToUpdate = item;
+                    break; // Found the live one
+                  } else if (!itemToUpdate) {
+                    itemToUpdate = item; // Fallback to ghost record
+                  }
                 }
               }
             }
@@ -1650,20 +2085,51 @@ function registerIpcHandlers() {
             getAllTypes().find((t) => t.name === typeName)?.id;
           if (!localTypeId) continue;
 
-          for (const relPath of relPaths) {
+          const rootIndices = data.typeItemRootIndices?.[typeName];
+
+          for (let i = 0; i < relPaths.length; i++) {
+            const relPath = relPaths[i];
+            const rootIndex = rootIndices?.[i];
             const platformRelative = relPath.replace(/\//g, path.sep);
 
             let itemToUpdate: LibraryItem | null = null;
 
-            for (const root of roots) {
-              const candidatePath = path.join(root, platformRelative);
-              const item = getItemByPath(candidatePath);
-              if (item) {
-                if (fs.existsSync(item.path)) {
+            // Precision matching
+            if (
+              data.roots &&
+              rootIndex !== undefined &&
+              rootIndex !== -1 &&
+              data.roots[rootIndex]
+            ) {
+              const exportedRootName = data.roots[rootIndex];
+              const localRootMatch = currentRoots.find(
+                (r) => path.basename(r) === exportedRootName,
+              );
+
+              if (localRootMatch) {
+                const candidatePath = path.join(
+                  localRootMatch,
+                  platformRelative,
+                );
+                const item = getItemByPath(candidatePath);
+                if (item) {
                   itemToUpdate = item;
-                  break;
-                } else if (!itemToUpdate) {
-                  itemToUpdate = item;
+                }
+              }
+            }
+
+            // Fallback
+            if (!itemToUpdate) {
+              for (const root of currentRoots) {
+                const candidatePath = path.join(root, platformRelative);
+                const item = getItemByPath(candidatePath);
+                if (item) {
+                  if (fs.existsSync(item.path)) {
+                    itemToUpdate = item;
+                    break;
+                  } else if (!itemToUpdate) {
+                    itemToUpdate = item;
+                  }
                 }
               }
             }
@@ -1703,28 +2169,37 @@ function registerIpcHandlers() {
 
     try {
       const content = await fs.promises.readFile(filePathToUse, "utf-8");
-      const data = JSON.parse(content) as {
-        version: number;
-        items: any[];
-        settings?: Record<string, string | null>;
-      };
-
-      if (!data.version || !Array.isArray(data.items)) {
+      const data = JSON.parse(content);
+      if (!data || (typeof data !== "object" && !Array.isArray(data))) {
         return { success: false, error: "Invalid backup file format" };
       }
 
-      const roots = readLibraryRoots();
+      // v-legacy Fallback: if data is a raw array, wrap it
+      const backup: {
+        roots?: string[];
+        items: any[];
+        settings?: Record<string, string | null>;
+        downloadHistory?: any[];
+      } = Array.isArray(data) ? { items: data } : data;
+
+      if (!Array.isArray(backup.items)) {
+        return { success: false, error: "Invalid backup file: no items found" };
+      }
+
+      const currentRoots = readLibraryRoots();
       let updatedCount = 0;
 
-      for (const item of data.items) {
+      for (const item of backup.items) {
         const {
           relativePath,
+          rootIndex,
           isFavorite,
           readingStatus,
           currentPage,
           lastReadAt,
         } = item as {
           relativePath: string;
+          rootIndex?: number;
           isFavorite: boolean;
           readingStatus: "unread" | "reading" | "read";
           currentPage: number;
@@ -1732,22 +2207,42 @@ function registerIpcHandlers() {
         };
         if (!relativePath) continue;
 
-        // Try to match this relative path against ALL current library roots
         let itemToUpdate: LibraryItem | null = null;
+        const platformRelative = relativePath.replace(/\//g, path.sep);
 
-        for (const root of roots) {
-          // Absolute path
-          const platformRelative = relativePath.replace(/\//g, path.sep);
-          const candidatePath = path.join(root, platformRelative);
+        // Precision matching: if backup has roots and rootIndex, try to find a matching local root by name
+        if (
+          backup.roots &&
+          rootIndex !== undefined &&
+          backup.roots[rootIndex]
+        ) {
+          const exportedRootName = backup.roots[rootIndex];
+          const localRootMatch = currentRoots.find(
+            (r) => path.basename(r) === exportedRootName,
+          );
 
-          const existingItem = getItemByPath(candidatePath);
-          if (existingItem) {
-            // Prioritize items that actually exist on disk (Relocation safety)
-            if (fs.existsSync(existingItem.path)) {
+          if (localRootMatch) {
+            const candidatePath = path.join(localRootMatch, platformRelative);
+            const existingItem = getItemByPath(candidatePath);
+            if (existingItem) {
               itemToUpdate = existingItem;
-              break; // Found the live one, stop searching
-            } else if (!itemToUpdate) {
-              itemToUpdate = existingItem; // Remember ghost record but keep looking for a live one
+            }
+          }
+        }
+
+        // Fallback: sequential search across all current roots (v0.0.1 style)
+        if (!itemToUpdate) {
+          for (const root of currentRoots) {
+            const candidatePath = path.join(root, platformRelative);
+            const existingItem = getItemByPath(candidatePath);
+            if (existingItem) {
+              // Prioritize items that actually exist on disk (Relocation safety)
+              if (fs.existsSync(existingItem.path)) {
+                itemToUpdate = existingItem;
+                break; // Found the live one, stop searching
+              } else if (!itemToUpdate) {
+                itemToUpdate = existingItem; // Remember ghost record but keep looking for a live one
+              }
             }
           }
         }
@@ -1776,10 +2271,67 @@ function registerIpcHandlers() {
       }
 
       // Restore settings from backup
-      if (data.settings && typeof data.settings === "object") {
-        for (const [key, value] of Object.entries(data.settings)) {
+      if (backup.settings && typeof backup.settings === "object") {
+        for (const [key, value] of Object.entries(backup.settings)) {
           if (value !== null && value !== undefined) {
             setSetting(key, String(value));
+          }
+        }
+      }
+
+      // Import download history
+      let historyImportedCount = 0;
+      if (backup.downloadHistory && Array.isArray(backup.downloadHistory)) {
+        for (const entry of backup.downloadHistory) {
+          // Check if URL already exists in history to avoid duplicates
+          const existing = getLatestDownloadHistoryByUrl(entry.url);
+          if (!existing) {
+            // Reconstruct absolute file_path if relative path was stored
+            let absolutePath = entry.file_path;
+            if (entry.file_path && !path.isAbsolute(entry.file_path)) {
+              // Try to resolve against current roots
+              const platformRelative = entry.file_path.replace(/\//g, path.sep);
+              for (const root of currentRoots) {
+                const candidate = path.join(root, platformRelative);
+                if (fs.existsSync(candidate)) {
+                  absolutePath = candidate;
+                  break;
+                }
+              }
+            }
+
+            const id = addDownloadHistory({
+              url: entry.url,
+              title: entry.title,
+              status: entry.status,
+              source: entry.source,
+              cover_url: entry.cover_url,
+              artist: entry.artist,
+              parody: entry.parody,
+              content_type: entry.content_type,
+            });
+
+            // Update with additional fields
+            updateDownloadHistory(id, {
+              completed_at: entry.completed_at,
+              file_path: absolutePath,
+              error_message: entry.error_message,
+            });
+
+            if (entry.hidden_from_queue) {
+              hideFromQueue(id);
+            }
+
+            // Restore logs if they exist in the backup
+            if (
+              entry.logs &&
+              Array.isArray(entry.logs) &&
+              entry.logs.length > 0
+            ) {
+              saveDownloadLogs(id, entry.logs);
+            }
+
+            historyImportedCount++;
           }
         }
       }
@@ -1788,21 +2340,29 @@ function registerIpcHandlers() {
         mainWindow.webContents.send("library:refreshed");
       }
 
-      return { success: true, count: updatedCount };
+      if (downloaderManager) {
+        downloaderManager.queue.restoreFromDatabase();
+        downloaderManager.notifyUpdate(true);
+      }
+
+      return {
+        success: true,
+        count: updatedCount,
+        historyCount: historyImportedCount,
+      };
     } catch (e: any) {
       console.error("Import error:", e);
       return { success: false, error: e.message };
     }
   });
 
-  // Reader handlers
   ipcMain.handle(
     "reader:getPage",
     async (
       _,
       archivePath: string,
       pageIndex: number,
-      includeHidden: boolean = false
+      includeHidden: boolean = false,
     ) => {
       try {
         if (!isValidLibraryPath(archivePath)) {
@@ -1812,7 +2372,6 @@ function registerIpcHandlers() {
 
         const ext = path.extname(archivePath).toLowerCase();
 
-        // Cache check
         const cached = getCachedArchive(archivePath);
         const item = getItemByPath(archivePath);
         const hiddenPages = item ? getHiddenPages(item.id) : [];
@@ -1822,9 +2381,7 @@ function registerIpcHandlers() {
           if (cached && cached.zip) {
             zip = cached.zip;
           } else {
-            // Open new
             zip = new StreamZip.async({ file: archivePath });
-            // Cache
             cacheArchive(archivePath, zip, undefined);
           }
 
@@ -1848,9 +2405,8 @@ function registerIpcHandlers() {
             const buffer = await zip.entryData(visibleEntries[pageIndex]);
             const dims = getImageDimensions(
               buffer,
-              path.extname(visibleEntries[pageIndex])
+              path.extname(visibleEntries[pageIndex]),
             );
-            // Keep open if cached
             return {
               data: buffer,
               totalPages: visibleEntries.length,
@@ -1890,9 +2446,8 @@ function registerIpcHandlers() {
               const buffer = await handler.getFile(visibleEntries[pageIndex]);
               const dims = getImageDimensions(
                 buffer,
-                path.extname(visibleEntries[pageIndex])
+                path.extname(visibleEntries[pageIndex]),
               );
-              // Keep open
               return {
                 data: buffer,
                 totalPages: visibleEntries.length,
@@ -1908,7 +2463,6 @@ function registerIpcHandlers() {
         } else if (
           [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"].includes(ext)
         ) {
-          // Image file
           const buffer = fs.readFileSync(archivePath);
           const dims = getImageDimensions(buffer, ext);
           return {
@@ -1924,7 +2478,7 @@ function registerIpcHandlers() {
         console.error("Failed to read page:", e);
         return null;
       }
-    }
+    },
   );
 
   ipcMain.handle("reader:getArchiveContent", async (_, archivePath: string) => {
@@ -1940,14 +2494,14 @@ function registerIpcHandlers() {
         const entries = await zip.entries();
         const imageEntries = Object.values(entries)
           .filter(
-            (e) => /\.(jpg|jpeg|png|gif|webp)$/i.test(e.name) && !e.isDirectory
+            (e) => /\.(jpg|jpeg|png|gif|webp)$/i.test(e.name) && !e.isDirectory,
           )
           .map((e) => e.name)
           .sort((a, b) =>
             a.localeCompare(b, undefined, {
               numeric: true,
               sensitivity: "base",
-            })
+            }),
           );
         await zip.close();
         return imageEntries;
@@ -1955,7 +2509,7 @@ function registerIpcHandlers() {
         const handler = await ArchiveHandler.open(archivePath);
         const entries = await handler.getEntries();
         entries.sort((a, b) =>
-          a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+          a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
         );
         handler.close();
         return entries;
@@ -1976,7 +2530,7 @@ function registerIpcHandlers() {
     async (_, itemId: number, pageName: string, hidden: boolean) => {
       setPageVisibility(itemId, pageName, hidden);
       return true;
-    }
+    },
   );
 
   ipcMain.handle("reader:getPageCount", async (_, archivePath: string) => {
@@ -1994,7 +2548,7 @@ function registerIpcHandlers() {
           (e) =>
             /\.(jpg|jpeg|png|gif|webp)$/i.test((e as any).name) &&
             !(e as any).isDirectory &&
-            !hiddenPages.includes((e as any).name)
+            !hiddenPages.includes((e as any).name),
         ).length;
         await zip.close();
         return visibleCount;
@@ -2002,7 +2556,7 @@ function registerIpcHandlers() {
         const handler = await ArchiveHandler.open(archivePath);
         const entries = await handler.getEntries();
         const visibleCount = entries.filter(
-          (entry) => !hiddenPages.includes(entry)
+          (entry) => !hiddenPages.includes(entry),
         ).length;
         handler.close();
         return visibleCount;
@@ -2020,15 +2574,14 @@ function registerIpcHandlers() {
       id: number,
       currentPage: number,
       status?: "unread" | "reading" | "read",
-      updateTimestamp?: boolean
+      updateTimestamp?: boolean,
     ) => {
       updateReadingProgress(id, currentPage, status, updateTimestamp);
       broadcastItemUpdate(id);
       return true;
-    }
+    },
   );
 
-  // Settings handlers
   ipcMain.handle("settings:get", (_, key: string) => {
     return getSetting(key);
   });
@@ -2042,8 +2595,8 @@ function registerIpcHandlers() {
     return getAllSettings();
   });
 
-  ipcMain.handle("library:getTotalBookCount", () => {
-    return getTotalBookCount();
+  ipcMain.handle("library:getTotalBookCount", (_, rootPath?: string) => {
+    return getTotalBookCount(rootPath);
   });
 
   ipcMain.handle("library:bulkDeleteItems", async (_, ids: number[]) => {
@@ -2085,7 +2638,7 @@ function registerIpcHandlers() {
         broadcastItemUpdate(id);
       }
       return true;
-    }
+    },
   );
 
   ipcMain.handle("library:getBulkItemTags", (_, itemIds: number[]) => {
@@ -2100,23 +2653,22 @@ function registerIpcHandlers() {
         broadcastItemUpdate(id);
       }
       return true;
-    }
+    },
   );
 
-  // Content Types Handlers
   ipcMain.handle("types:getAll", () => getAllTypes());
   ipcMain.handle("types:getAllWithAliases", () => getAllTypesWithAliases());
   ipcMain.handle(
     "types:create",
     (_, name: string, description: string | null) =>
-      createType(name, description)
+      createType(name, description),
   );
   ipcMain.handle(
     "types:update",
     (_, id: number, updates: Partial<ContentType>) => {
       updateType(id, updates);
       return true;
-    }
+    },
   );
   ipcMain.handle("types:delete", (_, id: number) => {
     deleteType(id);
@@ -2134,7 +2686,6 @@ function registerIpcHandlers() {
     return getTypeAliases(typeId);
   });
 
-  // Item Types Handlers
   ipcMain.handle("library:getItemTypes", (_, itemId: number) => {
     return getItemTypes(itemId);
   });
@@ -2144,7 +2695,7 @@ function registerIpcHandlers() {
       addItemTypes(itemId, typeIds);
       broadcastItemUpdate(itemId);
       return true;
-    }
+    },
   );
   ipcMain.handle(
     "library:removeItemTypes",
@@ -2152,7 +2703,7 @@ function registerIpcHandlers() {
       removeItemTypes(itemId, typeIds);
       broadcastItemUpdate(itemId);
       return true;
-    }
+    },
   );
   ipcMain.handle(
     "library:bulkAddItemTypes",
@@ -2162,7 +2713,7 @@ function registerIpcHandlers() {
         broadcastItemUpdate(id);
       }
       return true;
-    }
+    },
   );
   ipcMain.handle(
     "library:bulkRemoveItemTypes",
@@ -2172,7 +2723,7 @@ function registerIpcHandlers() {
         broadcastItemUpdate(id);
       }
       return true;
-    }
+    },
   );
 
   ipcMain.handle("utils:openExternal", (_, url) => {
@@ -2189,6 +2740,9 @@ function registerIpcHandlers() {
     }
   });
   ipcMain.handle("utils:getVersion", () => version);
+  ipcMain.handle("path-separators", () => {
+    return path.sep;
+  });
 }
 
 Menu.setApplicationMenu(null);

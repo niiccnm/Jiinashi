@@ -22,8 +22,6 @@ temp
 .vscode/*
 !.vscode/extensions.json
 .cursor
-.antigravity
-.agent
 .windsurf
 .idea
 .DS_Store

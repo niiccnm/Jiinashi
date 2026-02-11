@@ -76,9 +76,34 @@ interface Window {
       openExternal: (url: string) => Promise<void>;
       getVersion: () => Promise<string>;
     };
+    downloader: {
+      search: (url: string) => Promise<any>;
+      start: (
+        url: string,
+      ) => Promise<{ success: boolean; id?: number; error?: string }>;
+      cancel: (id: number) => Promise<void>;
+      retry: (id: number) => Promise<boolean>;
+      removeHistoryItem: (id: number) => Promise<boolean>;
+      openLogs: (taskId: number) => Promise<void>;
+      getTaskLogs: (taskId: number) => Promise<string[]>;
+      getQueue: () => Promise<any[]>;
+      removeFromQueue: (id: number) => Promise<boolean>;
+      getHistory: () => Promise<any[]>;
+      login: (siteKey: string) => Promise<boolean>;
+      clearHistory: () => Promise<boolean>;
+      clearQueue: () => Promise<boolean>;
+      openFolder: () => Promise<boolean>;
+      proxyImage: (imageUrl: string, source: string) => Promise<string | null>;
+      getLocalCover: (path: string) => Promise<string | null>;
+      getPathSeparators: () => Promise<string>;
+      onQueueUpdate: (callback: (queue: any[]) => void) => () => void;
+      onToast: (
+        callback: (message: string, type: "success" | "error" | "info") => void,
+      ) => () => void;
+    };
     library: {
       scan: (
-        path: string
+        path: string,
       ) => Promise<{ success: boolean; count?: number; error?: string }>;
       rescan: () => Promise<{
         success: boolean;
@@ -86,7 +111,14 @@ interface Window {
         error?: string;
       }>;
       getItems: (parentId?: number | null) => Promise<LibraryItem[]>;
-      search: (query: string) => Promise<LibraryItem[]>;
+      search: (
+        query: string,
+        options?: {
+          folderId?: number | null;
+          favoritesOnly?: boolean;
+          root?: string;
+        },
+      ) => Promise<LibraryItem[]>;
       getItem: (id: number) => Promise<LibraryItem | undefined>;
       getFavorites: () => Promise<LibraryItem[]>;
       getRecent: (limit?: number) => Promise<LibraryItem[]>;
@@ -94,30 +126,37 @@ interface Window {
       toggleFavorite: (id: number) => Promise<boolean>;
       updateItem: (
         id: number,
-        updates: Partial<LibraryItem>
+        updates: Partial<LibraryItem>,
       ) => Promise<boolean>;
       deleteItem: (id: number) => Promise<boolean>;
       showInFolder: (path: string) => Promise<boolean>;
       renameItem: (
         id: number,
-        newName: string
+        newName: string,
       ) => Promise<{ success: boolean; error?: string }>;
       getCover: (coverPath: string) => Promise<string | null>;
-      backup: () => Promise<{
+      backup: (options?: {
+        includeDownloadHistory?: boolean;
+        includeDownloadLogs?: boolean;
+      }) => Promise<{
         success: boolean;
         count?: number;
+        historyCount?: number;
         error?: string;
       }>;
-      importBackup: (
-        inputPath?: string
-      ) => Promise<{ success: boolean; count?: number; error?: string }>;
+      importBackup: (inputPath?: string) => Promise<{
+        success: boolean;
+        count?: number;
+        historyCount?: number;
+        error?: string;
+      }>;
       getRoots: () => Promise<string[]>;
       removeRoot: (
-        rootPath: string
+        rootPath: string,
       ) => Promise<{ success: boolean; error?: string }>;
       onRootsUpdated: (callback: (roots: string[]) => void) => () => void;
       clear: () => Promise<boolean>;
-      getTotalBookCount: () => Promise<number>;
+      getTotalBookCount: (rootPath?: string) => Promise<number>;
       exportTags: (options: {
         includeDescription: boolean;
         includeKeywords: boolean;
@@ -128,39 +167,40 @@ interface Window {
         excludedTypeIds?: number[];
       }) => Promise<{ success: boolean; error?: string }>;
       importTags: (
-        inputPath?: string
+        inputPath?: string,
       ) => Promise<{ success: boolean; count?: number; error?: string }>;
       bulkDeleteItems: (ids: number[]) => Promise<boolean>;
       bulkToggleFavorite: (ids: number[]) => Promise<boolean>;
       bulkSetTags: (
         itemIds: number[],
         tagIds: number[],
-        action: "add" | "remove"
+        action: "add" | "remove",
       ) => Promise<boolean>;
       bulkSetContentType: (
         itemIds: number[],
-        contentType: string | null
+        contentType: string | null,
       ) => Promise<boolean>;
       onItemUpdated: (callback: (item: LibraryItem) => void) => () => void;
       onItemAdded: (callback: (item: LibraryItem) => void) => () => void;
       onScanProgress: (
-        callback: (payload: ScanProgressPayload) => void
+        callback: (payload: ScanProgressPayload) => void,
       ) => () => void;
       onCleared: (callback: () => void) => () => void;
       onRefreshed: (callback: () => void) => () => void;
+      onTriggerScan: (callback: (folderPath: string) => void) => () => void;
     };
     reader: {
       getPage: (
         path: string,
         pageIndex: number,
-        includeHidden?: boolean
+        includeHidden?: boolean,
       ) => Promise<PageData | null>;
       getPageCount: (path: string) => Promise<number>;
       updateProgress: (
         id: number,
         currentPage: number,
         status?: "unread" | "reading" | "read",
-        updateTimestamp?: boolean
+        updateTimestamp?: boolean,
       ) => Promise<boolean>;
       openWindow: (id: number, pageIndex?: number) => Promise<boolean>;
       toggleFullscreen: () => Promise<void>;
@@ -172,10 +212,10 @@ interface Window {
       setPageVisibility: (
         itemId: number,
         pageName: string,
-        hidden: boolean
+        hidden: boolean,
       ) => Promise<boolean>;
       onFullscreenChange: (
-        callback: (isFullscreen: boolean) => void
+        callback: (isFullscreen: boolean) => void,
       ) => () => void;
     };
     window: {
@@ -193,7 +233,7 @@ interface Window {
       create: (
         name: string,
         categoryId: number | null,
-        description: string | null
+        description: string | null,
       ) => Promise<Tag>;
       update: (id: number, updates: Partial<Tag>) => Promise<boolean>;
       delete: (id: number) => Promise<boolean>;
@@ -221,7 +261,7 @@ interface Window {
       getAllWithAliases: () => Promise<ContentTypeWithAliases[]>;
       create: (
         name: string,
-        description: string | null
+        description: string | null,
       ) => Promise<ContentType>;
       update: (id: number, updates: Partial<ContentType>) => Promise<boolean>;
       delete: (id: number) => Promise<boolean>;

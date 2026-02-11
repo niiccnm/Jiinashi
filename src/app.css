@@ -37,3 +37,19 @@
   user-select: none !important;
   transition: none !important;
 }
+
+/* Dark theme for select dropdowns (option elements) */
+select {
+  color-scheme: dark;
+}
+
+option {
+  background-color: #0f172a; /* slate-900 equivalent */
+  color: #e2e8f0; /* slate-200 equivalent */
+}
+
+option:hover,
+option:focus,
+option:checked {
+  background-color: #1e3a5f; /* blue-ish tint for selection */
+}

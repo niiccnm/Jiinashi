@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
   import Dialog from "../components/Dialog.svelte";
   import { toasts } from "../stores/toast";
@@ -16,7 +16,7 @@
   let includeKeywords = $state(true);
   let includeDefaultTags = $state(true);
   let excludedCategoryIds = $state<number[]>([]);
-  let allCategories = $state<Category[]>([]);
+  let allCategories = $state<any[]>([]);
   let showExcludedCategories = $state(false);
 
   // Types Export Options
@@ -26,23 +26,28 @@
   let allTypes = $state<any[]>([]);
   let showExcludedTypes = $state(false);
 
+  // Backup Options
+  let includeDownloadHistory = $state(true);
+  let includeDownloadLogs = $state(false);
+
+  async function refreshSettings() {
+    try {
+      const allSettings = await window.electronAPI.settings.getAll();
+      settings = allSettings || {};
+      await loadRoots();
+      allCategories = await window.electronAPI.categories.getAll();
+      allTypes = await window.electronAPI.types.getAll();
+      appVersion = await window.electronAPI.utils.getVersion();
+    } catch (e) {
+      console.error("Failed to load settings:", e);
+      toasts.add("Failed to load settings", "error");
+    } finally {
+      pageLoading = false;
+    }
+  }
+
   onMount(() => {
-    const init = async () => {
-      try {
-        const allSettings = await window.electronAPI.settings.getAll();
-        settings = allSettings || {};
-        await loadRoots();
-        allCategories = await window.electronAPI.categories.getAll();
-        allTypes = await window.electronAPI.types.getAll();
-        appVersion = await window.electronAPI.utils.getVersion();
-      } catch (e) {
-        console.error("Failed to load settings:", e);
-        toasts.add("Failed to load settings", "error");
-      } finally {
-        pageLoading = false;
-      }
-    };
-    init();
+    refreshSettings();
 
     const unsubRoots = window.electronAPI.library.onRootsUpdated((newRoots) => {
       libraryRoots = newRoots;
@@ -81,13 +86,16 @@
   async function handleBackup() {
     loading = true;
     try {
-      const result = await window.electronAPI.library.backup();
+      const result = await window.electronAPI.library.backup({
+        includeDownloadHistory: includeDownloadHistory,
+        includeDownloadLogs: includeDownloadLogs,
+      });
       if (result && result.success) {
-        toasts.add(
-          `Backup successful! Saved ${result.count} items.`,
-          "success"
-        );
-        // Optimistic: nothing to update in UI for backup
+        let message = `Backup successful! Saved ${result.count} items.`;
+        if (result.historyCount && result.historyCount > 0) {
+          message = `Backup successful! Saved ${result.count} items and ${result.historyCount} download history entries.`;
+        }
+        toasts.add(message, "success");
       } else if (result && result.error !== "Cancelled") {
         toasts.add(`Backup failed: ${result.error}`, "error");
       }
@@ -106,9 +114,8 @@
       if (result && result.success) {
         toasts.add(
           `Restore successful! Updated ${result.count} items.`,
-          "success"
+          "success",
         );
-        // Optimistic: Assuming no visual refresh needed on Settings page for library items
       } else if (result && result.error !== "Cancelled") {
         toasts.add(`Restore failed: ${result.error}`, "error");
       }
@@ -184,7 +191,7 @@
       if (result && result.success) {
         toasts.add(
           `Tags imported! Mapped to ${result.count} items.`,
-          "success"
+          "success",
         );
       } else if (result && result.error !== "Cancelled") {
         toasts.add(`Import failed: ${result.error}`, "error");
@@ -205,16 +212,13 @@
 
     if (e.dataTransfer?.files?.[0]) {
       const file = e.dataTransfer.files[0];
-      // Check extension
       if (!file.name.toLowerCase().endsWith(".json")) {
         toasts.add(
           "Invalid file type. Please drop a JSON backup file.",
-          "error"
+          "error",
         );
         return;
       }
-      // Electron sets 'path' property on File objects for drag-and-drop,
-      // but strictly speaking we should use webUtils.getPathForFile(file) in modern Electron.
       // @ts-ignore
       const filePath = window.electronAPI.utils.getPathForFile(file);
       if (filePath) {
@@ -224,7 +228,6 @@
         } else if (name.includes("tags")) {
           await handleImportTags(filePath);
         } else {
-          // If unsure, default to restore attempt
           await handleRestore(filePath);
         }
       } else {
@@ -270,6 +273,36 @@
     } finally {
       loading = false;
       rootToRemove = null;
+    }
+  }
+
+  async function handleSelectDownloadPath() {
+    try {
+      const path = await window.electronAPI.dialog.selectFolder();
+      if (path) {
+        await updateSetting("downloadPath", path);
+      }
+    } catch (e) {
+      console.error("Failed to select download path:", e);
+    }
+  }
+
+  async function handleLogin(siteKey: string) {
+    loading = true;
+    try {
+      // @ts-ignore
+      const success = await window.electronAPI.downloader.login(siteKey);
+      if (success) {
+        await refreshSettings();
+        toasts.add(`Logged in to ${siteKey}`, "success");
+      } else {
+        toasts.add(`Login failed or cancelled for ${siteKey}`, "error");
+      }
+    } catch (e) {
+      console.error(e);
+      toasts.add(`Error during ${siteKey} login`, "error");
+    } finally {
+      loading = false;
     }
   }
 </script>
@@ -387,7 +420,7 @@
                   !settings["autoCheckUpdates"] ||
                     settings["autoCheckUpdates"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
               onkeydown={(e) =>
                 e.key === "Enter" &&
@@ -396,7 +429,7 @@
                   !settings["autoCheckUpdates"] ||
                     settings["autoCheckUpdates"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
             >
               <div class="flex flex-col">
@@ -520,7 +553,7 @@
                   !settings["enableAnimations"] ||
                     settings["enableAnimations"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
               onkeydown={(e) =>
                 e.key === "Enter" &&
@@ -529,7 +562,7 @@
                   !settings["enableAnimations"] ||
                     settings["enableAnimations"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
             >
               <div class="flex flex-col">
@@ -564,7 +597,7 @@
                   "blurR18",
                   !settings["blurR18"] || settings["blurR18"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
               onkeydown={(e) =>
                 e.key === "Enter" &&
@@ -572,7 +605,7 @@
                   "blurR18",
                   !settings["blurR18"] || settings["blurR18"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
             >
               <div class="flex flex-col">
@@ -611,7 +644,7 @@
                       !settings["blurR18Hover"] ||
                         settings["blurR18Hover"] === "false"
                         ? "true"
-                        : "false"
+                        : "false",
                     )}
                   onkeydown={(e) =>
                     e.key === "Enter" &&
@@ -620,7 +653,7 @@
                       !settings["blurR18Hover"] ||
                         settings["blurR18Hover"] === "false"
                         ? "true"
-                        : "false"
+                        : "false",
                     )}
                 >
                   <div class="flex flex-col">
@@ -792,7 +825,7 @@
                   "mangaMode",
                   !settings["mangaMode"] || settings["mangaMode"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
               onkeydown={(e) =>
                 e.key === "Enter" &&
@@ -800,7 +833,7 @@
                   "mangaMode",
                   !settings["mangaMode"] || settings["mangaMode"] === "false"
                     ? "true"
-                    : "false"
+                    : "false",
                 )}
             >
               <div class="flex flex-col">
@@ -824,6 +857,177 @@
           </div>
         </section>
 
+        <!-- Downloader Section -->
+        <section>
+          <h2
+            class="text-sm font-bold text-blue-400 uppercase tracking-widest mb-6 px-2"
+          >
+            Downloader
+          </h2>
+
+          <div
+            class="space-y-1 bg-white/[0.02] rounded-2xl border border-white/[0.06] overflow-hidden"
+          >
+            <!-- Download Path -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+            >
+              <div class="flex flex-col overflow-hidden mr-4">
+                <span
+                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                  >Download Location</span
+                >
+                <span
+                  class="text-sm text-slate-500 truncate"
+                  title={settings["downloadPath"]}
+                >
+                  {settings["downloadPath"] || "Not set"}
+                </span>
+              </div>
+              <button
+                onclick={handleSelectDownloadPath}
+                class="px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 font-medium rounded-lg transition-colors border border-blue-500/20 active:scale-95 shrink-0"
+              >
+                Change
+              </button>
+            </div>
+
+            <div class="h-px bg-white/[0.06] mx-5"></div>
+
+            <!-- Concurrent Downloads -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+            >
+              <div class="flex flex-col">
+                <span
+                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                  >Concurrent Downloads</span
+                >
+                <span class="text-sm text-slate-500"
+                  >Number of items to download at once</span
+                >
+              </div>
+              <div class="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="1"
+                  max="5"
+                  value={settings["concurrentDownloads"] || "2"}
+                  onchange={(e) =>
+                    updateSetting("concurrentDownloads", e.currentTarget.value)}
+                  class="w-16 bg-slate-900/50 text-slate-200 px-3 py-1.5 rounded-lg border border-white/10 focus:border-blue-500/50 focus:outline-none transition-all text-center font-mono"
+                />
+              </div>
+            </div>
+
+            <div class="h-px bg-white/[0.06] mx-5"></div>
+
+            <!-- Download Delay -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+            >
+              <div class="flex flex-col">
+                <span
+                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                  >Image Delay (ms)</span
+                >
+                <span class="text-sm text-slate-500"
+                  >Wait time between image requests to avoid rate limits</span
+                >
+              </div>
+              <div class="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="0"
+                  max="5000"
+                  step="100"
+                  value={settings["downloadDelay"] || "500"}
+                  onchange={(e) =>
+                    updateSetting("downloadDelay", e.currentTarget.value)}
+                  class="w-20 bg-slate-900/50 text-slate-200 px-3 py-1.5 rounded-lg border border-white/10 focus:border-blue-500/50 focus:outline-none transition-all text-center font-mono"
+                />
+              </div>
+            </div>
+
+            <div class="h-px bg-white/[0.06] mx-5"></div>
+
+            <!-- Max History -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+            >
+              <div class="flex flex-col">
+                <span
+                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                  >Max History Items</span
+                >
+                <span class="text-sm text-slate-500"
+                  >Number of completed downloads to keep in history</span
+                >
+              </div>
+              <div class="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="10"
+                  max="500"
+                  step="10"
+                  value={settings["maxHistoryItems"] || "50"}
+                  onchange={(e) =>
+                    updateSetting("maxHistoryItems", e.currentTarget.value)}
+                  class="w-20 bg-slate-900/50 text-slate-200 px-3 py-1.5 rounded-lg border border-white/10 focus:border-blue-500/50 focus:outline-none transition-all text-center font-mono"
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Site Authentication Section -->
+        <section>
+          <h2
+            class="text-sm font-bold text-blue-400 uppercase tracking-widest mb-6 px-2"
+          >
+            Site Authentication
+          </h2>
+
+          <div
+            class="space-y-1 bg-white/[0.02] rounded-2xl border border-white/[0.06] overflow-hidden"
+          >
+            <!-- E-Hentai / ExHentai -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+            >
+              <div class="flex flex-col">
+                <span
+                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                  >E-Hentai / ExHentai</span
+                >
+                <div class="flex items-center gap-2 mt-1">
+                  {#if settings["cookies:e-hentai"] || settings["cookies:exhentai"]}
+                    <span
+                      class="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-full border border-emerald-400/20"
+                    >
+                      <div
+                        class="w-1.5 h-1.5 rounded-full bg-emerald-400"
+                      ></div>
+                      Authenticated
+                    </span>
+                  {:else}
+                    <span class="text-sm text-slate-500">Not logged in</span>
+                  {/if}
+                </div>
+              </div>
+              <button
+                onclick={() => handleLogin("e-hentai")}
+                disabled={loading}
+                class="px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 font-medium rounded-lg transition-colors border border-blue-500/20 active:scale-95 shrink-0"
+              >
+                {settings["cookies:e-hentai"] || settings["cookies:exhentai"]
+                  ? "Re-login"
+                  : "Login"}
+              </button>
+            </div>
+          </div>
+        </section>
+
         <!-- Library Locations -->
         <section>
           <h2
@@ -835,6 +1039,50 @@
           <div
             class="bg-white/[0.02] rounded-2xl border border-white/[0.06] overflow-hidden"
           >
+            <!-- Library Sort Order -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+            >
+              <div class="flex flex-col">
+                <span
+                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                  >Folder Sort Order</span
+                >
+                <span class="text-sm text-slate-500"
+                  >How library folders are displayed in the switcher</span
+                >
+              </div>
+              <div class="relative">
+                <select
+                  value={settings["librarySortOrder"] || "alphabetical"}
+                  onchange={(e) =>
+                    updateSetting("librarySortOrder", e.currentTarget.value)}
+                  class="appearance-none bg-slate-900/50 text-slate-200 pl-4 pr-10 py-2 rounded-lg border border-white/10 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 focus:outline-none transition-all cursor-pointer hover:bg-slate-900"
+                >
+                  <option value="alphabetical">Alphabetical</option>
+                  <option value="imported">Import Order</option>
+                </select>
+                <div
+                  class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500"
+                >
+                  <svg
+                    class="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    ><path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 9l-7 7-7-7"
+                    /></svg
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="h-px bg-white/[0.06] mx-5"></div>
+
             {#if libraryRoots.length === 0}
               <div class="p-8 text-center text-slate-500 text-sm">
                 No library locations found. Import a folder to get started.
@@ -879,25 +1127,99 @@
             class="space-y-1 bg-white/[0.02] rounded-2xl border border-white/[0.06] overflow-hidden"
           >
             <!-- Backup -->
-            <div
-              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
-            >
-              <div class="flex flex-col">
-                <span
-                  class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
-                  >Backup / Export</span
+            <div class="group p-5 hover:bg-white/[0.02] transition-colors">
+              <div class="flex items-center justify-between">
+                <div class="flex flex-col">
+                  <span
+                    class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                    >Backup / Export</span
+                  >
+                  <span class="text-sm text-slate-500"
+                    >Save your reading progress and favorites to a JSON file</span
+                  >
+                </div>
+                <button
+                  onclick={handleBackup}
+                  disabled={loading}
+                  class="px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-medium rounded-lg transition-colors border border-emerald-500/20 active:scale-95 disabled:opacity-50"
                 >
-                <span class="text-sm text-slate-500"
-                  >Save your reading progress and favorites to a JSON file</span
-                >
+                  Backup
+                </button>
               </div>
-              <button
-                onclick={handleBackup}
-                disabled={loading}
-                class="px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-medium rounded-lg transition-colors border border-emerald-500/20 active:scale-95 disabled:opacity-50"
+
+              <!-- Backup Options -->
+              <div
+                class="mt-4 flex flex-col gap-3 p-4 bg-emerald-500/[0.03] rounded-2xl border border-emerald-500/10 shadow-inner"
               >
-                Backup
-              </button>
+                <!-- Include Download History -->
+                <div class="flex items-center justify-between">
+                  <div class="flex flex-col gap-0.5">
+                    <span class="text-sm font-semibold text-slate-200"
+                      >Include Download History</span
+                    >
+                    <span class="text-xs text-slate-500"
+                      >Include completed downloads and queue items</span
+                    >
+                  </div>
+                  <!-- Custom Switch -->
+                  <div
+                    class="relative w-10 h-6 rounded-full transition-colors duration-200 cursor-pointer {includeDownloadHistory
+                      ? 'bg-emerald-500'
+                      : 'bg-slate-700'}"
+                    role="button"
+                    tabindex="0"
+                    onclick={() =>
+                      (includeDownloadHistory = !includeDownloadHistory)}
+                    onkeydown={(e) =>
+                      e.key === "Enter" &&
+                      (includeDownloadHistory = !includeDownloadHistory)}
+                  >
+                    <div
+                      class="absolute left-1 top-1 bg-white w-4 h-4 rounded-full shadow-sm transition-transform duration-200 {includeDownloadHistory
+                        ? 'translate-x-4'
+                        : 'translate-x-0'}"
+                    ></div>
+                  </div>
+                </div>
+
+                {#if includeDownloadHistory}
+                  <!-- Connector Line -->
+                  <div class="flex gap-4">
+                    <div class="ml-4 w-px bg-emerald-500/20 rounded-full"></div>
+
+                    <!-- Include Download Logs -->
+                    <div class="flex-1 flex items-center justify-between py-1">
+                      <div class="flex flex-col gap-0.5">
+                        <span class="text-xs font-medium text-slate-400"
+                          >Include Detailed Logs</span
+                        >
+                        <span class="text-[10px] text-slate-500"
+                          >Include full execution logs for each download</span
+                        >
+                      </div>
+                      <!-- Custom Switch -->
+                      <div
+                        class="relative w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer {includeDownloadLogs
+                          ? 'bg-emerald-500'
+                          : 'bg-slate-800'}"
+                        role="button"
+                        tabindex="0"
+                        onclick={() =>
+                          (includeDownloadLogs = !includeDownloadLogs)}
+                        onkeydown={(e) =>
+                          e.key === "Enter" &&
+                          (includeDownloadLogs = !includeDownloadLogs)}
+                      >
+                        <div
+                          class="absolute left-1 top-1 bg-white w-3 h-3 rounded-full shadow-sm transition-transform duration-200 {includeDownloadLogs
+                            ? 'translate-x-4'
+                            : 'translate-x-0'}"
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+              </div>
             </div>
 
             <div class="h-px bg-white/[0.06] mx-5"></div>
@@ -1197,7 +1519,7 @@
                           onclick={() => toggleCategoryExclusion(cat.id)}
                           type="button"
                           class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all border {excludedCategoryIds.includes(
-                            cat.id
+                            cat.id,
                           )
                             ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
                             : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'}"
@@ -1330,7 +1652,7 @@
                           onclick={() => toggleTypeExclusion(type.id)}
                           type="button"
                           class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all border {excludedTypeIds.includes(
-                            type.id
+                            type.id,
                           )
                             ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
                             : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'}"

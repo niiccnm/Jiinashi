@@ -2,6 +2,9 @@
 
 A local library manager and reader for Doujinshi and Manga.
 
+> [!WARNING]
+> **Content & Metadata Warning**: This application includes a curated dataset of tags and definitions containing terminology related to a wide range of adult themes, fetishes, and kinks. Some content may be considered offensive, taboo, or disturbing. These terms are included solely for metadata management. Users can opt-out of installing this dataset during the installation process.
+
 > **Note**: This application was primarily developed for personal use and for a small circle of friends.
 
 ## Key Features
@@ -11,10 +14,10 @@ A local library manager and reader for Doujinshi and Manga.
 - **Library Scanning**: Scans configured folders to build your database.
 - **Supported Formats**:
 
-| Category     | Extensions                                            |
-| :----------- | :---------------------------------------------------- |
-| **Archives** | `.cbz`, `.zip`, `.cbr`, `.rar`, `.7z`, `.cb7`, `.pdf` |
-| **Images**   | `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tiff`      |
+| Category     | Extensions                                       |
+| :----------- | :----------------------------------------------- |
+| **Archives** | `.cbz`, `.zip`, `.cbr`, `.rar`                   |
+| **Images**   | `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tiff` |
 
 - **Content Types**: Categorize items as **Manga**, **Doujinshi**, **Webtoon**, **Artist CG**, etc.
 - **Deleting Behavior**: Deleting items moves them to the system Trash instead of permanent deletion.
@@ -45,9 +48,20 @@ Tagging system similar to online image boards.
 - **Backups**: Export library metadata (tags, reading progress, favorites) to a JSON file.
 - **Relocation support**: Attempts to re-link metadata to files if the root directory path changes.
 
+### 📥 Integrated Downloader
+
+A built-in, high-performance download manager for seamless content acquisition.
+
+- **Supported Sites**: Native support for **nhentai**, **E-Hentai / ExHentai**, and **Hitomi.la**.
+- **Quality Optimization**: Intelligently merges metadata from multiple sources to fetch the highest resolution images available.
+- **Visual Feedback**: Real-time previews and live progress tracking during the acquisition process.
+- **Metadata Bridging**: Automatically extracts and maps site metadata (tags, categories, and types) to your local database structure, ensuring consistent organization.
+- **Task Management**: Dedicated **Queue** and **History** tabs with persistent storage and configurable retention limits.
+
 ## 🚀 Future Roadmap
 
-- **Built-in Downloader**: Ability to download content directly within the application. (High Priority)
+~~- **Built-in Downloader**: Ability to download content directly within the application. (High Priority)~~
+
 - **Tracker Integration**: Support for **MAL** (MyAnimeList) and **AniList** to track your reading progress. (High Priority)
 - **Account Integration**: Import cookies or login to services (e.g., E-Hentai, ExHentai) to download content using your account, similar to Hitomi Downloader.
 - **Light Novel Support**: Support for managing and reading Light Novels with native **EPUB** support and dedicated settings.

@@ -16,7 +16,7 @@ export default defineConfig({
         const csp = process.env.NODE_ENV === "development" ? devCSP : prodCSP;
         return html.replace(
           "</head>",
-          `<meta http-equiv="Content-Security-Policy" content="${csp}">\n  </head>`
+          `<meta http-equiv="Content-Security-Policy" content="${csp}">\n  </head>`,
         );
       },
     },
@@ -27,13 +27,26 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ["better-sqlite3"],
+              external: ["better-sqlite3", "sharp"],
             },
           },
         },
       },
       preload: {
-        input: "electron/preload.ts",
+        // Build both the main window preload and the stealth preload for the hidden window
+        input: {
+          preload: "electron/preload.ts",
+          stealth_preload: "electron/downloader/parsers/stealth_preload.js",
+        },
+        vite: {
+          build: {
+            rollupOptions: {
+              output: {
+                inlineDynamicImports: false,
+              },
+            },
+          },
+        },
       },
     }),
   ],

@@ -6,7 +6,9 @@ export type View =
   | "favorites"
   | "recent"
   | "settings"
-  | "tags";
+  | "tags"
+  | "downloader"
+  | "download_logs";
 
 export interface LibraryItem {
   id: number;
@@ -91,6 +93,14 @@ export function openTags() {
   appState.update((s) => ({
     ...s,
     currentView: "tags",
+    currentBook: null,
+  }));
+}
+
+export function openDownloader() {
+  appState.update((s) => ({
+    ...s,
+    currentView: "downloader",
     currentBook: null,
   }));
 }

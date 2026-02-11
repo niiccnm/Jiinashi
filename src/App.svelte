@@ -6,6 +6,8 @@
   import Settings from "./lib/views/Settings.svelte";
   import Tags from "./lib/views/Tags.svelte";
   import About from "./lib/views/About.svelte";
+  import Downloader from "./lib/views/Downloader.svelte";
+  import DownloadLogs from "./lib/views/DownloadLogs.svelte";
   import ToastNotification from "./lib/components/ToastNotification.svelte";
   import UpdateNotification from "./lib/components/UpdateNotification.svelte";
   import {
@@ -15,12 +17,12 @@
     openRecent,
     openSettings,
     openTags,
+    openDownloader,
     navigateHistory,
   } from "./lib/stores/app";
+  import type { View } from "./lib/stores/app";
 
-  let view = $state<
-    "library" | "reader" | "favorites" | "recent" | "settings" | "tags"
-  >("library");
+  let view = $state<View>("library");
   let currentBook = $state<any>(null);
   let showAbout = $state(false);
 
@@ -48,6 +50,18 @@
     const viewParam = params.get("view");
     const bookId = params.get("bookId");
 
+    const taskId = params.get("taskId");
+
+    if (viewParam === "download_logs" && taskId) {
+      appState.update((s) => ({
+        ...s,
+        currentView: "download_logs",
+        currentBook: null,
+      }));
+
+      // Auxiliary window; show/fade handled in settings block
+    }
+
     if (viewParam === "reader" && bookId) {
       const id = parseInt(bookId);
       window.electronAPI.library.getItem(id).then((book) => {
@@ -65,29 +79,53 @@
       });
     }
 
-    window.electronAPI.settings.get("sidebarWidth").then((val) => {
-      if (val) {
-        const w = parseInt(val);
-        if (!isNaN(w)) {
-          sidebarWidth = w;
-          appState.update((s) => ({ ...s, sidebarWidth: w }));
+    // In auxiliary windows (like download logs), Electron APIs may not be ready the same way as the main window.
+    // Never leave the whole UI stuck invisible.
+    const failSafe = setTimeout(() => {
+      isInitialLoad = false;
+    }, 1200);
+
+    window.electronAPI.settings
+      .get("sidebarWidth")
+      .then((val) => {
+        if (val) {
+          const w = parseInt(val);
+          if (!isNaN(w)) {
+            sidebarWidth = w;
+            appState.update((s) => ({ ...s, sidebarWidth: w }));
+          }
         }
-      }
-      // Show window during dark loading state to prevent native white flash (v10)
-      setTimeout(async () => {
-        // Ensure browser has painted at least one dark frame
-        await new Promise((r) => requestAnimationFrame(r));
-        await new Promise((r) => requestAnimationFrame(r));
 
-        // Native Show
-        window.electronAPI.window.show();
+        // Show sequence for auxiliary windows to prevent flash
+        const isAuxiliary = !!viewParam;
 
-        // Wait a bit more for window manager to settle before fading in UI
-        setTimeout(() => {
-          isInitialLoad = false;
-        }, 150);
-      }, 500);
-    });
+        // Show window during dark loading state to prevent native white flash (v10)
+        setTimeout(
+          async () => {
+            // Ensure browser has painted at least one dark frame
+            await new Promise((r) => requestAnimationFrame(r));
+            await new Promise((r) => requestAnimationFrame(r));
+
+            // Native Show
+            window.electronAPI.window.show();
+
+            // Wait a bit more for window manager to settle before fading in UI
+            setTimeout(
+              () => {
+                isInitialLoad = false;
+              },
+              isAuxiliary ? 50 : 150,
+            );
+          },
+          isAuxiliary ? 150 : 500,
+        );
+      })
+      .catch(() => {
+        isInitialLoad = false;
+      })
+      .finally(() => {
+        clearTimeout(failSafe);
+      });
 
     const unsubscribe = appState.subscribe((state) => {
       view = state.currentView;
@@ -147,7 +185,7 @@
         isSnapped = false;
         window.electronAPI.settings.set(
           "sidebarWidth",
-          sidebarWidth.toString()
+          sidebarWidth.toString(),
         );
         localStorage.setItem("sidebarWidth", sidebarWidth.toString());
       }
@@ -157,11 +195,22 @@
     window.addEventListener("mousemove", handleGlobalMouseMove);
     window.addEventListener("mouseup", handleGlobalMouseUp);
 
+    // Auto-Scan Triggered after download completion
+    const unsubscribeScan = window.electronAPI.library.onTriggerScan(
+      (path: string) => {
+        console.log("[Auto-Scan] Triggered for path:", path);
+        window.electronAPI.library.scan(path).catch((e) => {
+          console.error("[Auto-Scan] Failed to scan:", e);
+        });
+      },
+    );
+
     return () => {
       unsubscribe();
       window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
+      unsubscribeScan();
     };
   });
 
@@ -187,7 +236,7 @@
     : ''}"
 >
   <!-- Sidebar -->
-  {#if view !== "reader"}
+  {#if view !== "reader" && view !== "download_logs"}
     <aside
       style="width: {sidebarWidth}px"
       class="bg-gray-900 border-r border-gray-800 flex flex-col relative group {isResizing ||
@@ -289,10 +338,10 @@
             class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
             style="opacity: {Math.max(
               0,
-              Math.min(1, (sidebarWidth - 80) / 40)
+              Math.min(1, (sidebarWidth - 80) / 40),
             )}; margin-left: {Math.max(
               0,
-              Math.min(12, ((sidebarWidth - 64) / 56) * 12)
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
             )}px"
           >
             <span class="truncate font-medium">Library</span>
@@ -327,10 +376,10 @@
             class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
             style="opacity: {Math.max(
               0,
-              Math.min(1, (sidebarWidth - 80) / 40)
+              Math.min(1, (sidebarWidth - 80) / 40),
             )}; margin-left: {Math.max(
               0,
-              Math.min(12, ((sidebarWidth - 64) / 56) * 12)
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
             )}px"
           >
             <span class="truncate font-medium">Recent</span>
@@ -365,10 +414,10 @@
             class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
             style="opacity: {Math.max(
               0,
-              Math.min(1, (sidebarWidth - 80) / 40)
+              Math.min(1, (sidebarWidth - 80) / 40),
             )}; margin-left: {Math.max(
               0,
-              Math.min(12, ((sidebarWidth - 64) / 56) * 12)
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
             )}px"
           >
             <span class="truncate font-medium">Tags</span>
@@ -403,13 +452,51 @@
             class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
             style="opacity: {Math.max(
               0,
-              Math.min(1, (sidebarWidth - 80) / 40)
+              Math.min(1, (sidebarWidth - 80) / 40),
             )}; margin-left: {Math.max(
               0,
-              Math.min(12, ((sidebarWidth - 64) / 56) * 12)
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
             )}px"
           >
             <span class="truncate font-medium">Favorites</span>
+          </div>
+        </button>
+
+        <button
+          class="w-full flex items-center rounded-lg transition-all duration-200 group/nav h-11 {view ===
+          'downloader'
+            ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+            : 'hover:bg-gray-800 text-gray-400 hover:text-white'}"
+          title={sidebarWidth < 120 ? "Downloader" : ""}
+          style="padding-left: 14px; padding-right: 8px;"
+          onclick={() => openDownloader()}
+        >
+          <div class="w-5 h-5 flex items-center justify-center shrink-0">
+            <svg
+              class="w-5 h-5 transition-transform duration-200 group-hover/nav:scale-110"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+          </div>
+          <div
+            class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
+            style="opacity: {Math.max(
+              0,
+              Math.min(1, (sidebarWidth - 80) / 40),
+            )}; margin-left: {Math.max(
+              0,
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
+            )}px"
+          >
+            <span class="truncate font-medium">Downloader</span>
           </div>
         </button>
       </nav>
@@ -443,10 +530,10 @@
             class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
             style="opacity: {Math.max(
               0,
-              Math.min(1, (sidebarWidth - 80) / 40)
+              Math.min(1, (sidebarWidth - 80) / 40),
             )}; margin-left: {Math.max(
               0,
-              Math.min(12, ((sidebarWidth - 64) / 56) * 12)
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
             )}px"
           >
             <span class="truncate font-medium">About</span>
@@ -487,10 +574,10 @@
             class="flex-1 min-w-0 overflow-hidden flex items-center transition-opacity duration-200"
             style="opacity: {Math.max(
               0,
-              Math.min(1, (sidebarWidth - 80) / 40)
+              Math.min(1, (sidebarWidth - 80) / 40),
             )}; margin-left: {Math.max(
               0,
-              Math.min(12, ((sidebarWidth - 64) / 56) * 12)
+              Math.min(12, ((sidebarWidth - 64) / 56) * 12),
             )}px"
           >
             <span class="truncate font-medium">Settings</span>
@@ -502,31 +589,43 @@
 
   <!-- Main Content -->
   <main class="flex-1 flex flex-col overflow-hidden">
-    <!-- Library View (Always mounted, hidden via CSS when not active) -->
-    <div
-      style="display: {view === 'library' ? 'flex' : 'none'}"
-      class="h-full flex-col"
-    >
-      <Library />
-    </div>
+    {#if view === "download_logs"}
+      <DownloadLogs />
+    {:else}
+      <!-- Library View (Always mounted, hidden via CSS when not active) -->
+      <div
+        style="display: {view === 'library' ? 'flex' : 'none'}"
+        class="h-full flex-col"
+      >
+        <Library />
+      </div>
 
-    <!-- Favorites View (Now persisted) -->
-    <div
-      style="display: {view === 'favorites' ? 'flex' : 'none'}"
-      class="h-full flex-col"
-    >
-      <Favorites />
-    </div>
+      <!-- Favorites View (Now persisted) -->
+      <div
+        style="display: {view === 'favorites' ? 'flex' : 'none'}"
+        class="h-full flex-col"
+      >
+        <Favorites />
+      </div>
 
-    <!-- Other views still use conditional rendering as they might not need state preservation or are lighter -->
-    {#if view === "reader" && currentBook}
-      <Reader book={currentBook} />
-    {:else if view === "recent"}
-      <Recent />
-    {:else if view === "settings"}
-      <Settings />
-    {:else if view === "tags"}
-      <Tags />
+      <!-- Downloader View (Persisted) -->
+      <div
+        style="display: {view === 'downloader' ? 'flex' : 'none'}"
+        class="h-full flex-col"
+      >
+        <Downloader />
+      </div>
+
+      <!-- Other views still use conditional rendering as they might not need state preservation or are lighter -->
+      {#if view === "reader" && currentBook}
+        <Reader book={currentBook} />
+      {:else if view === "recent"}
+        <Recent />
+      {:else if view === "settings"}
+        <Settings />
+      {:else if view === "tags"}
+        <Tags />
+      {/if}
     {/if}
   </main>
 

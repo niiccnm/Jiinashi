@@ -1,6 +1,6 @@
 {
   "name": "jiinashi",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -54,7 +54,9 @@
       "uninstallerIcon": "build/icon.ico",
       "artifactName": "${productName}_Setup_${version}_${arch}.${ext}",
       "include": "build/installer.nsh",
-      "license": "build/installer-license.txt"
+      "license": "build/installer-license.txt",
+      "createDesktopShortcut": false,
+      "deleteAppDataOnUninstall": false
     }
   },
   "keywords": [],
@@ -69,7 +71,7 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^35.7.5",
-    "electron-builder": "^26.0.12",
+    "electron-builder": "^26.4.0",
     "postcss": "^8.5.6",
     "svelte": "^5.45.9",
     "svelte-check": "^4.3.4",
@@ -84,9 +86,12 @@
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "adm-zip": "^0.5.16",
+    "axios": "^1.13.2",
     "better-sqlite3": "^12.5.0",
+    "cheerio": "^1.1.2",
     "electron-updater": "^6.7.3",
     "node-stream-zip": "^1.15.0",
-    "node-unrar-js": "^2.0.2"
+    "node-unrar-js": "^2.0.2",
+    "sharp": "^0.34.5"
   }
 }

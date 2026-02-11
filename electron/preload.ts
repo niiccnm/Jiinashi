@@ -1,5 +1,7 @@
+// Preload script — Type-safe IPC bridge for context-isolated renderers.
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
+// --- Shared Types (used by both preload and renderer) ---
 export interface LibraryItem {
   id: number;
   path: string;
@@ -62,14 +64,14 @@ export interface ReaderAPI {
   getPage: (
     path: string,
     pageIndex: number,
-    includeHidden?: boolean
+    includeHidden?: boolean,
   ) => Promise<PageData | null>;
   getPageCount: (path: string) => Promise<number>;
   updateProgress: (
     id: number,
     currentPage: number,
     status?: "unread" | "reading" | "read",
-    updateTimestamp?: boolean
+    updateTimestamp?: boolean,
   ) => Promise<boolean>;
   openWindow: (id: number, pageIndex?: number) => Promise<boolean>;
   toggleFullscreen: () => Promise<void>;
@@ -81,11 +83,12 @@ export interface ReaderAPI {
   setPageVisibility: (
     itemId: number,
     pageName: string,
-    hidden: boolean
+    hidden: boolean,
   ) => Promise<boolean>;
   onFullscreenChange: (callback: (isFullscreen: boolean) => void) => () => void;
 }
 
+// Main API contract for the renderer
 export interface ElectronAPI {
   dialog: {
     selectFolder: () => Promise<string | null>;
@@ -97,17 +100,27 @@ export interface ElectronAPI {
   };
   library: {
     scan: (
-      path: string
+      path: string,
     ) => Promise<{ success: boolean; count?: number; error?: string }>;
     rescan: () => Promise<{
       success: boolean;
       count?: number;
       error?: string;
     }>;
-    getItems: (parentId?: number | null) => Promise<LibraryItem[]>;
-    search: (query: string) => Promise<LibraryItem[]>;
+    getItems: (
+      parentId?: number | null,
+      rootPath?: string,
+    ) => Promise<LibraryItem[]>;
+    search: (
+      query: string,
+      options?: {
+        folderId?: number | null;
+        favoritesOnly?: boolean;
+        root?: string;
+      },
+    ) => Promise<LibraryItem[]>;
     getItem: (id: number) => Promise<LibraryItem | undefined>;
-    getFavorites: () => Promise<LibraryItem[]>;
+    getFavorites: (rootPath?: string) => Promise<LibraryItem[]>;
     getRecent: (limit?: number) => Promise<LibraryItem[]>;
     removeFromRecent: (id: number) => Promise<boolean>;
     toggleFavorite: (id: number) => Promise<boolean>;
@@ -116,20 +129,27 @@ export interface ElectronAPI {
     showInFolder: (path: string) => Promise<boolean>;
     renameItem: (
       id: number,
-      newName: string
+      newName: string,
     ) => Promise<{ success: boolean; error?: string }>;
     getCover: (coverPath: string) => Promise<string | null>;
-    backup: () => Promise<{
+    backup: (options?: {
+      includeDownloadHistory?: boolean;
+      includeDownloadLogs?: boolean;
+    }) => Promise<{
       success: boolean;
       count?: number;
+      historyCount?: number;
       error?: string;
     }>;
-    importBackup: (
-      inputPath?: string
-    ) => Promise<{ success: boolean; count?: number; error?: string }>;
+    importBackup: (inputPath?: string) => Promise<{
+      success: boolean;
+      count?: number;
+      historyCount?: number;
+      error?: string;
+    }>;
     getRoots: () => Promise<string[]>;
     removeRoot: (
-      rootPath: string
+      rootPath: string,
     ) => Promise<{ success: boolean; error?: string }>;
     onRootsUpdated: (callback: (roots: string[]) => void) => () => void;
     clear: () => Promise<boolean>;
@@ -141,26 +161,27 @@ export interface ElectronAPI {
       excludedCategoryIds: number[];
     }) => Promise<{ success: boolean; error?: string }>;
     importTags: (
-      inputPath?: string
+      inputPath?: string,
     ) => Promise<{ success: boolean; count?: number; error?: string }>;
     bulkDeleteItems: (ids: number[]) => Promise<boolean>;
     bulkToggleFavorite: (ids: number[]) => Promise<boolean>;
     bulkSetTags: (
       itemIds: number[],
       tagIds: number[],
-      action: "add" | "remove"
+      action: "add" | "remove",
     ) => Promise<boolean>;
     bulkSetContentType: (
       itemIds: number[],
-      contentType: string | null
+      contentType: string | null,
     ) => Promise<boolean>;
     onItemUpdated: (callback: (item: LibraryItem) => void) => () => void;
     onItemAdded: (callback: (item: LibraryItem) => void) => () => void;
     onScanProgress: (
-      callback: (payload: ScanProgressPayload) => void
+      callback: (payload: ScanProgressPayload) => void,
     ) => () => void;
     onCleared: (callback: () => void) => () => void;
     onRefreshed: (callback: () => void) => () => void;
+    onTriggerScan: (callback: (folderPath: string) => void) => () => void;
   };
   reader: ReaderAPI;
   window: {
@@ -178,7 +199,7 @@ export interface ElectronAPI {
     create: (
       name: string,
       categoryId: number | null,
-      description: string | null
+      description: string | null,
     ) => Promise<Tag>;
     update: (id: number, updates: Partial<Tag>) => Promise<boolean>;
     delete: (id: number) => Promise<boolean>;
@@ -228,8 +249,36 @@ export interface ElectronAPI {
   env: {
     isDev: boolean;
   };
+  downloader: {
+    search: (url: string) => Promise<any>;
+    start: (
+      url: string,
+    ) => Promise<{ success: boolean; id?: number; error?: string }>;
+    cancel: (id: number) => Promise<void>;
+    retry: (id: number) => Promise<boolean>;
+    removeHistoryItem: (id: number) => Promise<boolean>;
+    openLogs: (taskId: number) => Promise<void>;
+    getTaskLogs: (taskId: number) => Promise<string[]>;
+    getQueue: () => Promise<any[]>;
+    removeFromQueue: (id: number) => Promise<boolean>;
+    getHistory: () => Promise<any[]>;
+    login: (siteKey: string) => Promise<boolean>;
+    clearHistory: () => Promise<boolean>;
+    clearFinished: () => Promise<boolean>;
+    cancelAll: () => Promise<boolean>;
+    retryAll: () => Promise<boolean>;
+    openFolder: () => Promise<boolean>;
+    proxyImage: (imageUrl: string, source: string) => Promise<string | null>;
+    getLocalCover: (path: string) => Promise<string | null>;
+    getPathSeparators: () => Promise<string>;
+    onQueueUpdate: (callback: (queue: any[]) => void) => () => void;
+    onToast: (
+      callback: (message: string, type: "success" | "error" | "info") => void,
+    ) => () => void;
+  };
 }
 
+// --- IPC Bridge Implementation ---
 const api: ElectronAPI = {
   dialog: {
     selectFolder: () => ipcRenderer.invoke("dialog:selectFolder"),
@@ -243,11 +292,19 @@ const api: ElectronAPI = {
   library: {
     scan: (path: string) => ipcRenderer.invoke("library:scan", path),
     rescan: () => ipcRenderer.invoke("library:rescan"),
-    getItems: (parentId: number | null = null) =>
-      ipcRenderer.invoke("library:getItems", parentId),
-    search: (query: string) => ipcRenderer.invoke("library:searchItems", query),
+    getItems: (parentId: number | null = null, rootPath: string = "") =>
+      ipcRenderer.invoke("library:getItems", parentId, rootPath),
+    search: (
+      query: string,
+      options?: {
+        folderId?: number | null;
+        favoritesOnly?: boolean;
+        root?: string;
+      },
+    ) => ipcRenderer.invoke("library:searchItems", query, options),
     getItem: (id: number) => ipcRenderer.invoke("library:getItem", id),
-    getFavorites: () => ipcRenderer.invoke("library:getFavorites"),
+    getFavorites: (rootPath: string = "") =>
+      ipcRenderer.invoke("library:getFavorites", rootPath),
     getRecent: (limit?: number) =>
       ipcRenderer.invoke("library:getRecent", limit),
     removeFromRecent: (id: number) =>
@@ -263,12 +320,14 @@ const api: ElectronAPI = {
       ipcRenderer.invoke("library:renameItem", id, newName),
     getCover: (coverPath: string) =>
       ipcRenderer.invoke("library:getCover", coverPath),
-    backup: () => ipcRenderer.invoke("library:backup"),
+    backup: (options?: { includeDownloadHistory?: boolean }) =>
+      ipcRenderer.invoke("library:backup", options),
     importBackup: (inputPath?: string) =>
       ipcRenderer.invoke("library:importBackup", inputPath),
     getRoots: () => ipcRenderer.invoke("library:getRoots"),
     removeRoot: (rootPath: string) =>
       ipcRenderer.invoke("library:removeRoot", rootPath),
+    // Event subscription pattern with cleanup
     onRootsUpdated: (callback: (roots: string[]) => void) => {
       const subscription = (_: any, roots: string[]) => callback(roots);
       ipcRenderer.on("library:roots-updated", subscription);
@@ -276,7 +335,8 @@ const api: ElectronAPI = {
         ipcRenderer.removeListener("library:roots-updated", subscription);
     },
     clear: () => ipcRenderer.invoke("library:clear"),
-    getTotalBookCount: () => ipcRenderer.invoke("library:getTotalBookCount"),
+    getTotalBookCount: (rootPath?: string) =>
+      ipcRenderer.invoke("library:getTotalBookCount", rootPath),
     exportTags: (options: {
       includeDescription: boolean;
       includeKeywords: boolean;
@@ -295,7 +355,7 @@ const api: ElectronAPI = {
     bulkSetTags: (
       itemIds: number[],
       tagIds: number[],
-      action: "add" | "remove"
+      action: "add" | "remove",
     ) => ipcRenderer.invoke("library:bulkSetTags", itemIds, tagIds, action),
     bulkSetContentType: (itemIds: number[], contentType: string | null) =>
       ipcRenderer.invoke("library:bulkSetContentType", itemIds, contentType),
@@ -329,6 +389,12 @@ const api: ElectronAPI = {
       return () =>
         ipcRenderer.removeListener("library:refreshed", subscription);
     },
+    onTriggerScan: (callback: (folderPath: string) => void) => {
+      const subscription = (_: any, path: string) => callback(path);
+      ipcRenderer.on("library:trigger-scan", subscription);
+      return () =>
+        ipcRenderer.removeListener("library:trigger-scan", subscription);
+    },
   },
   reader: {
     getPage: (path: string, pageIndex: number, includeHidden?: boolean) =>
@@ -339,14 +405,14 @@ const api: ElectronAPI = {
       id: number,
       currentPage: number,
       status?: "unread" | "reading" | "read",
-      updateTimestamp?: boolean
+      updateTimestamp?: boolean,
     ) =>
       ipcRenderer.invoke(
         "reader:updateProgress",
         id,
         currentPage,
         status,
-        updateTimestamp
+        updateTimestamp,
       ),
     openWindow: (id: number, pageIndex?: number) =>
       ipcRenderer.invoke("reader:openWindow", id, pageIndex),
@@ -386,7 +452,7 @@ const api: ElectronAPI = {
     create: (
       name: string,
       categoryId: number | null,
-      description: string | null
+      description: string | null,
     ) => ipcRenderer.invoke("tags:create", name, categoryId, description),
     update: (id: number, updates: Partial<Tag>) =>
       ipcRenderer.invoke("tags:update", id, updates),
@@ -458,10 +524,56 @@ const api: ElectronAPI = {
     testEvent: (type: string) => ipcRenderer.invoke("update:test-event", type),
   },
   env: {
+    // Sync check for environment initialization
     isDev:
       process.env.NODE_ENV === "development" ||
       !ipcRenderer.sendSync("env:is-packaged"),
   },
+  downloader: {
+    search: (url: string) => ipcRenderer.invoke("downloader:search", url),
+    start: (url: string) => ipcRenderer.invoke("downloader:start", url),
+    cancel: (id: number) => ipcRenderer.invoke("downloader:cancel", id),
+    retry: (id: number) => ipcRenderer.invoke("downloader:retry", id),
+    removeHistoryItem: (id: number) =>
+      ipcRenderer.invoke("downloader:remove-history-item", id),
+    openLogs: (taskId: number) =>
+      ipcRenderer.invoke("downloader:openLogsWindow", taskId),
+    getTaskLogs: (taskId: number) =>
+      ipcRenderer.invoke("downloader:get-task-logs", taskId),
+    getQueue: () => ipcRenderer.invoke("downloader:get-queue"),
+    removeFromQueue: (id: number) =>
+      ipcRenderer.invoke("downloader:remove-from-queue", id),
+    getHistory: () => ipcRenderer.invoke("downloader:get-history"),
+    login: (siteKey: string) => ipcRenderer.invoke("downloader:login", siteKey),
+    clearHistory: () => ipcRenderer.invoke("downloader:clear-history"),
+    clearFinished: () => ipcRenderer.invoke("downloader:clear-finished"),
+    cancelAll: () => ipcRenderer.invoke("downloader:cancel-all"),
+    retryAll: () => ipcRenderer.invoke("downloader:retry-all"),
+    openFolder: () => ipcRenderer.invoke("downloader:open-folder"),
+    proxyImage: (url: string, source: string) =>
+      ipcRenderer.invoke("downloader:proxy-image", url, source),
+    getLocalCover: (path: string) =>
+      ipcRenderer.invoke("downloader:get-local-cover", path),
+    getPathSeparators: () => ipcRenderer.invoke("path-separators"),
+    onQueueUpdate: (callback: (queue: any[]) => void) => {
+      const subscription = (_: any, queue: any[]) => callback(queue);
+      ipcRenderer.on("downloader:queue-update", subscription);
+      return () =>
+        ipcRenderer.removeListener("downloader:queue-update", subscription);
+    },
+    onToast: (
+      callback: (message: string, type: "success" | "error" | "info") => void,
+    ) => {
+      const subscription = (
+        _: any,
+        message: string,
+        type: "success" | "error" | "info",
+      ) => callback(message, type);
+      ipcRenderer.on("downloader:toast", subscription);
+      return () => ipcRenderer.removeListener("downloader:toast", subscription);
+    },
+  },
 };
 
+// Expose API under window.electronAPI
 contextBridge.exposeInMainWorld("electronAPI", api);

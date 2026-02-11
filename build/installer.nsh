@@ -12,15 +12,20 @@
   Var ImportTypesCheckbox
   Var ImportTypesState
 
+  Var DesktopShortcutCheckbox
+  Var DesktopShortcutState
+
   !macro customInit
     ; Initialize states (Checked by default)
     StrCpy $ImportCategoriesState 1
     StrCpy $ImportTagsState 1
     StrCpy $ImportTypesState 1
+    StrCpy $DesktopShortcutState 0
   !macroend
 
   !macro customPageAfterChangeDir
     Page custom createOptionsPage leaveOptionsPage
+    Page custom createShortcutPage leaveShortcutPage
   !macroend
 
   Function createOptionsPage
@@ -61,6 +66,26 @@
     ${NSD_OnClick} $ImportTypesCheckbox onSubChanged
     
     nsDialogs::Show
+ FunctionEnd
+
+  Function createShortcutPage
+    nsDialogs::Create 1018
+    Pop $0
+    
+    ${If} $0 == error
+      Abort
+    ${EndIf}
+
+    !insertmacro MUI_HEADER_TEXT "Shortcut Options" "Choose where you want to access Jiinashi."
+
+    ${NSD_CreateLabel} 0 0 100% 12u "Select additional shortcuts to create:"
+    Pop $0
+
+    ${NSD_CreateCheckbox} 10u 20u 90% 12u "Create Desktop Shortcut"
+    Pop $DesktopShortcutCheckbox
+    ${NSD_SetState} $DesktopShortcutCheckbox $DesktopShortcutState
+    
+    nsDialogs::Show
   FunctionEnd
 
   Function onMainChanged
@@ -95,6 +120,10 @@
     ${NSD_GetState} $ImportTypesCheckbox $ImportTypesState
   FunctionEnd
 
+  Function leaveShortcutPage
+    ${NSD_GetState} $DesktopShortcutCheckbox $DesktopShortcutState
+  FunctionEnd
+
   !macro customInstall
     CreateDirectory "$INSTDIR\resources"
     FileOpen $0 "$INSTDIR\resources\install-config.json" w
@@ -123,5 +152,44 @@
     
     FileWrite $0 $1
     FileClose $0
+
+    ${If} $DesktopShortcutState == ${BST_CHECKED}
+      CreateShortCut "$DESKTOP\Jiinashi.lnk" "$INSTDIR\Jiinashi.exe"
+    ${EndIf}
   !macroend
+!else
+  Var DeleteDataCheckbox
+  Var DeleteDataState
+
+  !macro customUnInstall
+    ${If} $DeleteDataState == ${BST_CHECKED}
+      ; Remove the user data folder in AppData/Roaming if the user opted in
+      RMDir /r "$APPDATA\Jiinashi"
+    ${EndIf}
+  !macroend
+
+  UninstPage custom un.createOptionsPage un.leaveOptionsPage
+
+  Function un.createOptionsPage
+    nsDialogs::Create 1018
+    Pop $0
+    ${If} $0 == error
+      Abort
+    ${EndIf}
+
+    !insertmacro MUI_HEADER_TEXT "Post-Uninstallation Cleanup" "Choose if you want to remove all local data."
+
+    ${NSD_CreateLabel} 0 0 100% 12u "Select additional cleanup options:"
+    Pop $0
+
+    ${NSD_CreateCheckbox} 10u 20u 90% 12u "Delete all user data (databases, history, covers)"
+    Pop $DeleteDataCheckbox
+    ${NSD_SetState} $DeleteDataCheckbox ${BST_UNCHECKED} ; Off by default
+
+    nsDialogs::Show
+  FunctionEnd
+
+  Function un.leaveOptionsPage
+    ${NSD_GetState} $DeleteDataCheckbox $DeleteDataState
+  FunctionEnd
 !endif

@@ -95,7 +95,7 @@
 
         try {
           const dataUrl = await window.electronAPI.library.getCover(
-            item.cover_path
+            item.cover_path,
           );
           if (dataUrl) {
             coverCache[item.id] = dataUrl;
@@ -162,7 +162,7 @@
         } else {
           try {
             const fetched = await window.electronAPI.library.getItem(
-              payload.id
+              payload.id,
             );
             if (fetched && fetched.last_read_at) {
               items = [fetched, ...items];
@@ -177,7 +177,7 @@
         refreshTimer = setTimeout(() => {
           loadRecent(true);
         }, 300);
-      }
+      },
     );
     const unsubscribeRefreshed = window.electronAPI.library.onRefreshed(() => {
       loadRecent(true);

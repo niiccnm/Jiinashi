@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import {
     openBook,
@@ -13,6 +13,7 @@
   import TypeSelector from "../components/TypeSelector.svelte";
   import BulkSelection from "../components/BulkSelection.svelte";
   import ArchiveManager from "../components/ArchiveManager.svelte";
+  import FolderSwitcher from "../components/FolderSwitcher.svelte";
   import { SelectionModel } from "../state/selection.svelte";
   import type { LibraryItem } from "../stores/app";
 
@@ -23,7 +24,6 @@
     title: string;
   }
 
-  // Mapping for tags -> codes
   const LANGUAGE_CODES: Record<string, string> = {
     English: "EN",
     Japanese: "JP",
@@ -50,6 +50,18 @@
     node.select();
   }
 
+  function restoreScroll(node: HTMLElement, scrollTop: number) {
+    node.scrollTop = scrollTop;
+    return {
+      update(newScrollTop: number) {
+        // Only scroll if significantly different to allow manual scrolling
+        if (Math.abs(node.scrollTop - newScrollTop) > 50) {
+          node.scrollTop = newScrollTop;
+        }
+      },
+    };
+  }
+
   let viewStack = $state<FolderView[]>([]);
   let activeIndex = $derived(Math.max(0, viewStack.length - 1));
 
@@ -59,7 +71,7 @@
       items: [],
       scrollTop: 0,
       title: "Library",
-    }
+    },
   );
 
   let items = $derived(
@@ -71,7 +83,7 @@
         numeric: true,
         sensitivity: "base",
       });
-    })
+    }),
   );
 
   let currentFolderId = $derived(currentView.id);
@@ -91,7 +103,6 @@
     const desiredFolderId = $appState.libraryState.currentFolderId;
     // If the state dictates a folder different from what we are showing
     if (desiredFolderId !== currentFolderId) {
-      searchQuery = ""; // Clear search on external navigation (mouse buttons)
       // If we are just moving back up the stack (parent)
       const parentView = viewStack[viewStack.length - 2];
       if (parentView && parentView.id === desiredFolderId) {
@@ -107,7 +118,7 @@
           const childFolder =
             activeIndex >= 0
               ? viewStack[activeIndex].items.find(
-                  (i) => i.id === desiredFolderId
+                  (i) => i.id === desiredFolderId,
                 )
               : null;
 
@@ -133,7 +144,7 @@
   let gridSize = $state<"small" | "medium" | "large">(
     (typeof localStorage !== "undefined" &&
       (localStorage.getItem("libraryGridSize") as any)) ||
-      "medium"
+      "medium",
   );
   let itemCountHovered = $state(false);
   let totalLibraryBooks = $state(0);
@@ -148,6 +159,67 @@
 
   let lastResetFolderId = $state<number | null>(null);
   let lastResetSearchQuery = $state("");
+
+  let selectedRoot = $state(localStorage.getItem("librarySelectedRoot") || "");
+  let librarySortOrder = $state<"alphabetical" | "imported">("alphabetical");
+  let skipItemAnimation = $state(false);
+
+  $effect(() => {
+    // Reactive dependency on selectedRoot
+    const root = selectedRoot;
+    localStorage.setItem("librarySelectedRoot", root);
+
+    // When root changes, reset to the top level of the library
+    // Use tick to ensure state is clean before loading
+    tick().then(async () => {
+      itemsCache.clear();
+
+      try {
+        // Pre-fetch the new root's items BEFORE clearing the view
+        // Using "root" as folderId for openFolder's logic equivalent
+        const cacheKey = `${root || "all"}:root`;
+        const getItems = window.electronAPI.library.getItems as any;
+        const folderItems = await getItems(null, root);
+        itemsCache.set(cacheKey, folderItems);
+
+        // Preload covers to prevent image pop-in
+        const itemsToPreload = folderItems.slice(0, 30);
+        await Promise.all(
+          itemsToPreload.map((item: any) => {
+            const coverPath = item.cover_path;
+            if (!coverPath) return Promise.resolve();
+            return new Promise((resolve) => {
+              const img = new Image();
+              img.onload = resolve;
+              img.onerror = resolve;
+              img.src = `media:///${coverPath.replace(/\\/g, "/")}`;
+            });
+          }),
+        );
+
+        // Atomically replace viewStack with new data (no empty state)
+        skipItemAnimation = true;
+        viewStack = [
+          {
+            id: null,
+            items: folderItems,
+            scrollTop: 0,
+            title: "Library",
+          },
+        ];
+        // Reset animation suppression after a tick
+        setTimeout(() => {
+          skipItemAnimation = false;
+        }, 50);
+      } catch (e) {
+        console.error("Failed to switch library root", e);
+        // Fallback to standard open if pre-fetch fails
+        viewStack = [];
+        openFolder(null, "Library", false);
+      }
+      refreshGlobalCount();
+    });
+  });
 
   $effect(() => {
     // Only reset limit when intent actually changes
@@ -170,10 +242,11 @@
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting && renderLimit < filteredItems.length) {
+          // Incrementally load more items as user scrolls
           renderLimit += 50;
         }
       },
-      { rootMargin: "500px" }
+      { rootMargin: "500px" },
     );
     observer.observe(loaderRef);
     return () => observer.disconnect();
@@ -181,7 +254,9 @@
 
   async function refreshGlobalCount() {
     try {
-      totalLibraryBooks = await window.electronAPI.library.getTotalBookCount();
+      totalLibraryBooks = await window.electronAPI.library.getTotalBookCount(
+        selectedRoot || undefined,
+      );
     } catch (e) {
       console.error("Failed to get global book count", e);
     }
@@ -197,11 +272,18 @@
           ? parseInt(all.blurR18Intensity)
           : 12;
 
-        // Surgical updates to avoid unnecessary re-renders
+        // Surgical updates to avoid unnecessary item card re-renders
         if (blurR18 !== newBlurR18) blurR18 = newBlurR18;
         if (blurR18Hover !== newBlurR18Hover) blurR18Hover = newBlurR18Hover;
         if (blurR18Intensity !== newBlurR18Intensity)
           blurR18Intensity = newBlurR18Intensity;
+
+        if (
+          all.librarySortOrder === "alphabetical" ||
+          all.librarySortOrder === "imported"
+        ) {
+          librarySortOrder = all.librarySortOrder as any;
+        }
       }
     } catch (e) {
       console.error("Failed to refresh settings", e);
@@ -209,9 +291,6 @@
   }
 
   onMount(() => {
-    if (viewStack.length === 0) {
-      openFolder(null, "Library");
-    }
     refreshGlobalCount();
 
     // Fetch persisted settings
@@ -277,16 +356,24 @@
   async function openFolder(
     folderId: number | null,
     title: string,
-    silent = false
+    silent = false,
   ) {
-    if (!silent) loading = true;
+    if (!silent) {
+      loading = true;
+      // Reset focus to prevent ghost navigation in new view
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    }
     try {
-      const cacheKey = folderId?.toString() ?? "root";
+      // Always fetch fresh if silent (refresh) or if not in cache
+      // Include selectedRoot in cache key to avoid cross-root pollution
+      const cacheKey = `${selectedRoot || "all"}:${folderId?.toString() ?? "root"}`;
       let folderItems: LibraryItem[] = [];
 
-      // Always fetch fresh if silent (refresh) or if not in cache
       if (silent || !itemsCache.has(cacheKey)) {
-        folderItems = await window.electronAPI.library.getItems(folderId);
+        const getItems = window.electronAPI.library.getItems as any;
+        folderItems = await getItems(folderId, selectedRoot);
         itemsCache.set(cacheKey, folderItems);
       } else {
         folderItems = itemsCache.get(cacheKey)!;
@@ -304,11 +391,10 @@
             img.onerror = resolve;
             img.src = `media:///${coverPath.replace(/\\/g, "/")}`;
           });
-        })
+        }),
       );
 
       // Push new view or update existing if silent
-      searchQuery = "";
       if (silent) {
         // Update existing view in stack
         const index = viewStack.findIndex((v) => v.id === folderId);
@@ -343,7 +429,6 @@
   }
 
   function handleBack() {
-    searchQuery = "";
     if (viewStack.length > 1) {
       const parentView = viewStack[viewStack.length - 2];
 
@@ -361,7 +446,6 @@
   }
 
   function navigateToStackIndex(index: number) {
-    searchQuery = "";
     if (index >= 0 && index < viewStack.length) {
       // If navigating to immediate parent, try history back
       if (index === viewStack.length - 2) {
@@ -376,7 +460,9 @@
     }
   }
 
-  function handleGlobalKeydown(e: KeyboardEvent) {
+  function handleGlobalKeydown(e: any) {
+    if ($appState.currentView !== "library") return;
+
     if (e.key === "Escape") {
       if (showTagEditor) {
         closeTagEditor();
@@ -386,12 +472,205 @@
         closeTypeEditor();
         return;
       }
+
+      // Blur focused grid items
+      if (document.activeElement?.hasAttribute("data-nav-index")) {
+        (document.activeElement as HTMLElement).blur();
+      }
+    }
+
+    // Global Grid Navigation
+    if (e.key.startsWith("Arrow") || e.key === "Enter" || e.key === " ") {
+      // If we're typing in search, don't hijack arrows unless specified
+      if (e.target instanceof HTMLInputElement) return;
+
+      // 1. Native scroll throttle
+      if (e.repeat && (e.key === "ArrowUp" || e.key === "ArrowDown")) return;
+
+      const items = visibleItems;
+      if (items.length === 0) return;
+
+      const focusedEl = document.activeElement as HTMLElement;
+      let currentIndex = -1;
+      let scanSuccess = false;
+
+      // 2. Identify selection
+      const activeView = document.querySelector(
+        '[data-active-view="true"]',
+      ) as HTMLElement;
+      if (
+        focusedEl?.hasAttribute("data-nav-index") &&
+        activeView &&
+        activeView.contains(focusedEl)
+      ) {
+        const containerRect = activeView.getBoundingClientRect();
+        const itemRect = focusedEl.getBoundingClientRect();
+
+        const isVisible =
+          itemRect.bottom > containerRect.top &&
+          itemRect.top < containerRect.bottom;
+        const isHorizontalRepetition =
+          e.repeat && (e.key === "ArrowLeft" || e.key === "ArrowRight");
+
+        if (isHorizontalRepetition || isVisible) {
+          currentIndex = parseInt(
+            focusedEl.getAttribute("data-nav-index") || "-1",
+          );
+        } else {
+          // 3. Recovery logic
+          const viewportCenterY = containerRect.top + containerRect.height / 2;
+          const isAtBottom =
+            activeView.scrollTop + activeView.clientHeight >=
+            activeView.scrollHeight - 50;
+          const isAtTop = activeView.scrollTop < 50;
+
+          let probeY = viewportCenterY;
+          if (isAtBottom) probeY = containerRect.bottom - 60;
+          if (isAtTop) probeY = containerRect.top + 60;
+
+          // a. Entry point
+          let probeX;
+          if (e.key === "ArrowLeft") {
+            probeX = containerRect.right - 40;
+          } else if (e.key === "ArrowRight") {
+            probeX = containerRect.left + 40;
+          } else {
+            probeX = itemRect.left + itemRect.width / 2;
+            if (probeX < containerRect.left || probeX > containerRect.right) {
+              probeX = containerRect.left + containerRect.width / 2;
+            }
+          }
+
+          // b. Row grouping
+          const allVisibleEl = Array.from(
+            activeView.querySelectorAll("[data-nav-index]"),
+          );
+          let anchorItem: {
+            index: number;
+            top: number;
+            bottom: number;
+          } | null = null;
+          let minDist = Infinity;
+
+          const candidates: { index: number; rect: DOMRect }[] = [];
+          for (const el of allVisibleEl) {
+            const rect = el.getBoundingClientRect();
+            const center = rect.top + rect.height / 2;
+            const dist = Math.abs(center - probeY);
+
+            if (dist < minDist) {
+              minDist = dist;
+              anchorItem = {
+                index: parseInt(el.getAttribute("data-nav-index") || "-1"),
+                top: rect.top,
+                bottom: rect.bottom,
+              };
+            }
+            candidates.push({
+              index: parseInt(el.getAttribute("data-nav-index") || "-1"),
+              rect,
+            });
+          }
+
+          let bestRow: { index: number; left: number }[] = [];
+          if (anchorItem) {
+            const rowThreshold = (anchorItem.bottom - anchorItem.top) * 0.5;
+            for (const c of candidates) {
+              const overlap =
+                Math.min(anchorItem.bottom, c.rect.bottom) -
+                Math.max(anchorItem.top, c.rect.top);
+              if (overlap > rowThreshold) {
+                bestRow.push({ index: c.index, left: c.rect.left });
+              }
+            }
+          }
+
+          if (bestRow && bestRow.length > 0) {
+            bestRow.sort((a, b) => a.left - b.left);
+            if (e.key === "ArrowLeft") {
+              currentIndex = bestRow[bestRow.length - 1].index;
+            } else if (e.key === "ArrowRight") {
+              currentIndex = bestRow[0].index;
+            } else {
+              const centerIdx = Math.floor((bestRow.length - 1) / 2);
+              currentIndex = bestRow[centerIdx].index;
+            }
+            scanSuccess = true;
+          }
+
+          if (!scanSuccess) {
+            if (isAtBottom) currentIndex = items.length - 1;
+            else currentIndex = 0;
+          }
+        }
+      } else {
+        currentIndex = -1;
+      }
+
+      let nextIndex = -1;
+
+      // 4. Calculate move
+      if (scanSuccess) {
+        nextIndex = currentIndex;
+      } else {
+        if (currentIndex === -1 && items.length > 0) {
+          nextIndex = 0;
+        } else if (currentIndex !== -1) {
+          const cols = calculateGridColumns();
+          if (e.key === "ArrowRight") nextIndex = currentIndex + 1;
+          else if (e.key === "ArrowLeft") nextIndex = currentIndex - 1;
+          else if (e.key === "ArrowDown") nextIndex = currentIndex + cols;
+          else if (e.key === "ArrowUp") nextIndex = currentIndex - cols;
+        }
+      }
+
+      if (currentIndex === -1 && nextIndex === -1 && items.length > 0) {
+        nextIndex = 0;
+      }
+
+      // 5. Apply move
+      if (nextIndex >= 0 && nextIndex < items.length) {
+        e.preventDefault();
+        const nextEl = activeView?.querySelector(
+          `[data-nav-index="${nextIndex}"]`,
+        ) as HTMLElement;
+        if (nextEl) {
+          nextEl.focus({ preventScroll: true });
+          nextEl.scrollIntoView({ behavior: "auto", block: "nearest" });
+        }
+      }
+    }
+  }
+
+  // Get grid columns based on breakpoints
+  function calculateGridColumns() {
+    const width = window.innerWidth;
+    if (gridSize === "small") {
+      if (width >= 1536) return 12;
+      if (width >= 1280) return 10;
+      if (width >= 1024) return 8;
+      if (width >= 768) return 6;
+      if (width >= 640) return 4;
+      return 3;
+    } else if (gridSize === "large") {
+      if (width >= 1536) return 6;
+      if (width >= 1280) return 5;
+      if (width >= 1024) return 4;
+      if (width >= 768) return 3;
+      return 2;
+    } else {
+      if (width >= 1536) return 8;
+      if (width >= 1280) return 6;
+      if (width >= 1024) return 5;
+      if (width >= 768) return 4;
+      if (width >= 640) return 3;
+      return 2;
     }
   }
 
   function handleItemClick(
     item: LibraryItem,
-    event?: MouseEvent | KeyboardEvent
+    event?: MouseEvent | KeyboardEvent,
   ) {
     if (selection.selectionMode || (event && event.ctrlKey)) {
       selection.toggle(item.id, filteredItems, event);
@@ -425,15 +704,15 @@
     } else if (action === "favorite" || action === "tags") {
       // Batch update all modified items at once to prevent multi-render flash
       const updatedItems = await Promise.all(
-        selection.ids.map((id) => window.electronAPI.library.getItem(id))
+        selection.ids.map((id) => window.electronAPI.library.getItem(id)),
       );
       const itemsMap = new Map(
-        updatedItems.filter(Boolean).map((i) => [i!.id, i!])
+        updatedItems.filter(Boolean).map((i) => [i!.id, i!]),
       );
 
       const updateList = (list: LibraryItem[]) =>
         list.map((i) =>
-          itemsMap.get(i.id) ? { ...i, ...itemsMap.get(i.id) } : i
+          itemsMap.get(i.id) ? { ...i, ...itemsMap.get(i.id) } : i,
         );
 
       viewStack = viewStack.map((v) => ({ ...v, items: updateList(v.items) }));
@@ -452,7 +731,7 @@
 
     const updateList = (list: LibraryItem[]) =>
       list.map((i) =>
-        i.id === item.id ? { ...i, is_favorite: isFavorite } : i
+        i.id === item.id ? { ...i, is_favorite: isFavorite } : i,
       );
 
     viewStack = viewStack.map((v) => ({ ...v, items: updateList(v.items) }));
@@ -520,6 +799,7 @@
     }
   }
 
+  // Toggle type inclusion (click) or exclusion (double-click)
   function handleTypeClick(typeId: number) {
     const now = Date.now();
     const isDoubleClick = lastClickedId === typeId && now - lastClickTime < 300;
@@ -589,7 +869,7 @@
       if (updatedItem) {
         if (activeIndex >= 0 && viewStack[activeIndex]) {
           viewStack[activeIndex].items = viewStack[activeIndex].items.map(
-            (i) => (i.id === updatedItem.id ? { ...i, ...updatedItem } : i)
+            (i) => (i.id === updatedItem.id ? { ...i, ...updatedItem } : i),
           );
         }
 
@@ -600,14 +880,14 @@
             itemsCache
               .get(key)!
               .map((i) =>
-                i.id === updatedItem.id ? { ...i, ...updatedItem } : i
-              )
+                i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
+              ),
           );
         }
 
         if (searchResults.length > 0) {
           searchResults = searchResults.map((i) =>
-            i.id === updatedItem.id ? { ...i, ...updatedItem } : i
+            i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
           );
         }
       }
@@ -624,7 +904,7 @@
       if (updatedItem) {
         if (activeIndex >= 0 && viewStack[activeIndex]) {
           viewStack[activeIndex].items = viewStack[activeIndex].items.map(
-            (i) => (i.id === updatedItem.id ? { ...i, ...updatedItem } : i)
+            (i) => (i.id === updatedItem.id ? { ...i, ...updatedItem } : i),
           );
         }
 
@@ -635,14 +915,14 @@
             itemsCache
               .get(key)!
               .map((i) =>
-                i.id === updatedItem.id ? { ...i, ...updatedItem } : i
-              )
+                i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
+              ),
           );
         }
 
         if (searchResults.length > 0) {
           searchResults = searchResults.map((i) =>
-            i.id === updatedItem.id ? { ...i, ...updatedItem } : i
+            i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
           );
         }
       }
@@ -671,7 +951,7 @@
     try {
       const result = await window.electronAPI.library.renameItem(
         renameItem.id,
-        renameValue.trim()
+        renameValue.trim(),
       );
 
       if (result.success) {
@@ -758,7 +1038,7 @@
 
     // 1. Find the Root Item in current items
     const root = items.find((r) =>
-      normalize(item.path).startsWith(normalize(r.path))
+      normalize(item.path).startsWith(normalize(r.path)),
     );
 
     // Fallback: show immediate parent folder name
@@ -798,6 +1078,7 @@
     }
   }
 
+  // Get grid CSS classes
   function getGridClass(): string {
     switch (gridSize) {
       case "small":
@@ -839,7 +1120,7 @@
         viewStack = viewStack.map((v) => ({
           ...v,
           items: v.items.map((i) =>
-            i.id === updatedItem.id ? { ...i, ...updatedItem } : i
+            i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
           ),
         }));
 
@@ -847,8 +1128,8 @@
           itemsCache.set(
             key,
             items.map((i) =>
-              i.id === updatedItem.id ? { ...i, ...updatedItem } : i
-            )
+              i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
+            ),
           );
         });
 
@@ -866,7 +1147,7 @@
             });
           }, 150);
         }
-      }
+      },
     );
 
     const unsubscribeProgress = window.electronAPI.library.onScanProgress(
@@ -882,7 +1163,7 @@
             lastScannedCover = `media:///${item.cover_path.replace(/\\/g, "/")}`;
           }
         }
-      }
+      },
     );
 
     const interval = setInterval(() => {
@@ -973,7 +1254,8 @@
   async function refreshCurrentView() {
     const key = currentFolderId?.toString() ?? "root";
     itemsCache.delete(key); // Clear cache
-    const newItems = await window.electronAPI.library.getItems(currentFolderId);
+    const getItems = window.electronAPI.library.getItems as any;
+    const newItems = await getItems(currentFolderId, selectedRoot);
     viewStack[activeIndex].items = newItems;
     itemsCache.set(key, newItems);
   }
@@ -981,30 +1263,46 @@
   // Debounced search effect
   let searchTimeout: ReturnType<typeof setTimeout>;
   let refreshSearchTimeout: ReturnType<typeof setTimeout>;
+  // Combined search params for reactive effect
+  let searchParamsForEffect = $derived({
+    q: searchQuery,
+    f: currentFolderId,
+    r: selectedRoot,
+  });
+
   $effect(() => {
-    // Backend global search at root
-    if (currentFolderId === null) {
-      if (searchQuery.trim()) {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(async () => {
-          isSearching = true;
-          const currentQuery = searchQuery;
-          try {
-            const results =
-              await window.electronAPI.library.search(currentQuery);
-            if (currentQuery === searchQuery) {
-              searchResults = results;
-            }
-          } finally {
-            isSearching = false;
+    const { q, f, r } = searchParamsForEffect;
+
+    if (q.trim()) {
+      clearTimeout(searchTimeout);
+
+      // Use shorter delay if ONLY navigation changed
+      const isNavOnly = untrack(() => lastProcessedQuery) === q;
+      const delay = isNavOnly ? 50 : 300;
+      lastProcessedQuery = q;
+
+      searchTimeout = setTimeout(async () => {
+        isSearching = true;
+        try {
+          const results = await window.electronAPI.library.search(q, {
+            folderId: f,
+            root: f ? undefined : r,
+          });
+          if (q === searchQuery) {
+            searchResults = results;
           }
-        }, 300);
-      } else {
-        searchResults = [];
-        showSearchSuggestions = false;
-      }
+        } finally {
+          isSearching = false;
+        }
+      }, delay);
+    } else {
+      searchResults = [];
+      showSearchSuggestions = false;
+      lastProcessedQuery = "";
     }
   });
+
+  let lastProcessedQuery = "";
 
   let showSearchSuggestions = $state(false);
   let searchSuggestions = $state<any[]>([]);
@@ -1020,27 +1318,22 @@
     const val = (e.target as HTMLInputElement).value;
     searchQuery = val;
 
-    // Increment ID for this new input event
+    // Increment ID to prevent race conditions
     searchRequestId++;
     const currentRequestId = searchRequestId;
 
     clearTimeout(autocompleteTimeout);
     autocompleteTimeout = setTimeout(async () => {
-      // Autocomplete logic
       const terms = val.split(/,\s*/);
       const currentTerm = terms[terms.length - 1].trim();
 
       if (currentTerm.length > 0 && currentTerm !== "-") {
-        // Start searching after 1 char
-        // Clean the term: Remove ZWSP and leading exclusion dash
         let cleanTerm = currentTerm.replaceAll(TAG_MARKER, "");
-        if (cleanTerm.startsWith("-")) {
-          cleanTerm = cleanTerm.slice(1);
-        }
+        if (cleanTerm.startsWith("-")) cleanTerm = cleanTerm.slice(1);
 
         const tags = await window.electronAPI.tags.search(cleanTerm);
 
-        // Race check: Ensure this response matches the LATEST request
+        // Ensure response matches latest request
         if (searchRequestId === currentRequestId) {
           searchSuggestions = tags;
           showSearchSuggestions = tags.length > 0;
@@ -1171,13 +1464,9 @@
       });
     };
 
-    // Root: Filter async results to hide stale matches
-    if (currentFolderId === null) {
-      return searchResults.filter(matchItem);
-    }
-
-    // Subfolder: Use local filter
-    return items.filter(matchItem);
+    // Filter backend results to hide stale matches (if any from debouncing)
+    // and apply type filters which are currently applied client-side.
+    return searchResults.filter(matchItem);
   });
 
   let visibleItems = $derived(filteredItems.slice(0, renderLimit));
@@ -1187,7 +1476,7 @@
     filteredItems.filter((i) => {
       // Treat everything that is not explicitly a folder as a file
       return String(i.type).toLowerCase() !== "folder";
-    }).length
+    }).length,
   );
   let stabilizedAllIds = $derived(filteredItems.map((i) => i.id));
 
@@ -1468,7 +1757,8 @@
     class="h-16 bg-slate-900/80 border-b border-slate-700/50 flex items-center justify-between px-6 gap-4 sticky top-0 z-30 backdrop-blur-md"
   >
     <!-- Left: Navigation (Breadcrumbs) -->
-    <div class="flex items-center gap-3 flex-1 min-w-0 overflow-hidden">
+    <!-- Left: Navigation (Breadcrumbs) -->
+    <div class="flex items-center gap-3 flex-1 min-w-0">
       {#if viewStack.length > 1}
         <button
           onclick={handleBack}
@@ -1509,37 +1799,43 @@
               /></svg
             >
           {/if}
-          <div class="flex items-center gap-2">
-            <button
-              onclick={() => navigateToStackIndex(i)}
-              class="text-lg font-medium whitespace-nowrap {i === activeIndex
-                ? 'text-white'
-                : 'text-slate-400 hover:text-white'} transition-colors"
-            >
-              {view.title}
-            </button>
-            {#if i === activeIndex}
-              <span
-                role="status"
-                title={!searchQuery
-                  ? itemCountHovered
-                    ? "Total files"
-                    : "Total items"
-                  : undefined}
-                class="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-400 text-sm cursor-default select-none transition-all duration-200 hover:bg-slate-700 hover:text-white"
-                onmouseenter={() => (itemCountHovered = true)}
-                onmouseleave={() => (itemCountHovered = false)}
-              >
-                {itemCountHovered
-                  ? currentFolderId === null && !searchQuery
-                    ? totalLibraryBooks
-                    : fileCount
-                  : totalCount}
-              </span>
-            {/if}
-          </div>
+          <button
+            onclick={() => navigateToStackIndex(i)}
+            class="text-lg font-medium whitespace-nowrap {i === activeIndex
+              ? 'text-white'
+              : 'text-slate-400 hover:text-white'} transition-colors"
+          >
+            {view.title}
+          </button>
         {/each}
       </div>
+
+      <!-- Folder Switcher: After title, before count -->
+      <FolderSwitcher
+        currentRoot={selectedRoot}
+        sortOrder={librarySortOrder}
+        onSelect={(root) => {
+          selectedRoot = root;
+        }}
+      />
+
+      <span
+        role="status"
+        title={!searchQuery
+          ? itemCountHovered
+            ? "Total files"
+            : "Total items"
+          : undefined}
+        class="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-400 text-sm cursor-default select-none transition-all duration-200 hover:bg-slate-700 hover:text-white"
+        onmouseenter={() => (itemCountHovered = true)}
+        onmouseleave={() => (itemCountHovered = false)}
+      >
+        {itemCountHovered
+          ? currentFolderId === null && !searchQuery
+            ? totalLibraryBooks
+            : fileCount
+          : totalCount}
+      </span>
     </div>
 
     <!-- Center: Search Bar -->
@@ -1860,11 +2156,16 @@
       <div
         class="absolute inset-0 overflow-auto p-6 scroll-smooth bg-slate-900"
         use:dragScroll={{ axis: "y" }}
-        onscroll={() => {
+        use:restoreScroll={view.scrollTop}
+        onscroll={(e) => {
           if (activeMenuId !== null) closeMenu();
           if (showTypeFilter) showTypeFilter = false;
+          if (showSearchSuggestions) showSearchSuggestions = false;
+          // Capture scroll position
+          view.scrollTop = (e.target as HTMLElement).scrollTop;
         }}
         style="display: {index === activeIndex ? 'block' : 'none'}"
+        data-active-view={index === activeIndex}
       >
         {#if view.items.length === 0 && !loading}
           <div
@@ -1906,29 +2207,39 @@
             </div>
           </div>
         {:else}
-          <div class="grid {getGridClass()} gap-4">
-            {#each visibleItems as item (item.id)}
+          <div class="grid {getGridClass()} gap-4 library-grid">
+            {#each visibleItems as item, idx (item.id)}
               <div
                 role="button"
                 tabindex="0"
-                class="flex flex-col group relative rounded-xl transition-[transform,shadow,border-color] duration-300 hover:scale-[1.02] hover:shadow-2xl hover:shadow-blue-500/10 text-left cursor-pointer bg-slate-900 border border-slate-700/50 focus:outline-none focus:border-slate-700/50 focus:ring-0 focus-visible:outline-none focus-visible:ring-0 select-none outline-none ring-0 overflow-hidden {item.type ===
+                data-nav-index={idx}
+                data-type={item.type}
+                data-item-id={item.id}
+                class="flex flex-col group relative rounded-xl transition-[transform,shadow,border-color] duration-300 hover:scale-[1.02] hover:shadow-2xl hover:shadow-blue-500/10 text-left cursor-pointer bg-slate-900 border border-slate-700/50 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 select-none outline-none ring-0 overflow-hidden {item.type ===
                 'folder'
                   ? 'hover:border-amber-500/50 hover:shadow-amber-500/10'
                   : 'hover:border-blue-500/50 hover:shadow-blue-500/10'}"
-                in:fly|local={{ y: 10, duration: 300 }}
+                in:fly|local={{
+                  y: skipItemAnimation ? 0 : 10,
+                  duration: skipItemAnimation ? 0 : 300,
+                }}
                 style="content-visibility: auto;"
                 onclick={(e: MouseEvent) => handleItemClick(item, e)}
                 onmousedown={(e: MouseEvent) =>
                   e.shiftKey && e.preventDefault()}
                 ondblclick={(e: MouseEvent) => handleItemClick(item, e)}
-                onkeydown={(e: KeyboardEvent) =>
-                  e.key === "Enter" && handleItemClick(item, e)}
+                onkeydown={(e: KeyboardEvent) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleItemClick(item, e);
+                  }
+                }}
               >
                 <!-- Selection Overlay -->
                 {#if selection.selectionMode || selection.has(item.id)}
                   <div
                     class="absolute inset-0 z-40 rounded-xl transition-all duration-200 pointer-events-none {selection.has(
-                      item.id
+                      item.id,
                     )
                       ? 'bg-blue-500/10 border-2 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.2)]'
                       : 'bg-blue-500/0 border-0'}"
@@ -1944,7 +2255,7 @@
                     <div class="absolute top-2 left-2 p-1">
                       <div
                         class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-200 {selection.has(
-                          item.id
+                          item.id,
                         )
                           ? 'bg-blue-500 border-blue-500'
                           : 'bg-black/40 border-slate-400 group-hover:border-blue-400'}"
@@ -2186,7 +2497,7 @@
                     {:else if item.reading_status !== "unread"}
                       <div
                         class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white {getStatusColor(
-                          item.reading_status
+                          item.reading_status,
                         )} rounded-br-lg shadow-lg"
                       >
                         {getStatusLabel(item.reading_status)}
@@ -2382,18 +2693,29 @@
 {/if}
 
 <style>
-  /* Aggressively nuke focus outlines and selection highlights */
+  /* Aggressively nuke focus outlines for general elements to keep clean UI */
   :global(*:focus),
-  :global(*:focus-visible),
-  :global(*:active) {
+  :global(*:focus-visible) {
     outline: none !important;
-    box-shadow: none !important;
   }
 
-  /* Restore focus rings only for keyboard-ready elements */
+  /* High-visibility selector for Grid Items (Keyboard Only) */
+  [role="button"]:focus-visible {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.4) !important;
+    z-index: 60;
+  }
+
+  /* Folders get an amber selector (Keyboard Only) */
+  [role="button"][data-type="folder"]:focus-visible {
+    outline: 2px solid #f59e0b !important;
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.4) !important;
+    z-index: 60;
+  }
+
   :global(input:focus),
-  :global(textarea:focus),
-  :global(select:focus) {
+  :global(textarea:focus) {
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2) !important;
   }
 
