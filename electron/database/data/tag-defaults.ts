@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 
 export function initDefaultTags(
   db: Database.Database,
-  options: { importTags: boolean },
+  options: { importTags: boolean; syncDefaults?: boolean },
 ) {
   if (!options.importTags) return;
 
@@ -1311,12 +1311,32 @@ export function initDefaultTags(
     },
   };
 
-  const insertTag = db.prepare(
-    "INSERT OR IGNORE INTO tags (name, category_id, description, is_default) VALUES (?, ?, ?, 1)",
+  const upsertTag = db.prepare(`
+    INSERT INTO tags (name, category_id, description, is_default)
+    VALUES (?, ?, ?, 1)
+    ON CONFLICT(name) DO UPDATE SET
+      description = excluded.description,
+      category_id = excluded.category_id
+    WHERE is_default = 1
+  `);
+
+  const deleteDefaultAliases = db.prepare(`
+    DELETE FROM tag_aliases 
+    WHERE tag_id = ? 
+    AND tag_id IN (SELECT id FROM tags WHERE is_default = 1)
+  `);
+
+  const insertAliasOrdered = db.prepare(
+    "INSERT OR IGNORE INTO tag_aliases (tag_id, alias, sort_order) VALUES (?, ?, ?)",
   );
-  const insertAlias = db.prepare(
-    "INSERT OR IGNORE INTO tag_aliases (tag_id, alias) VALUES (?, ?)",
-  );
+
+  const insertTagOnly = db.prepare(`
+    INSERT OR IGNORE INTO tags (name, category_id, description, is_default)
+    VALUES (?, ?, ?, 1)
+  `);
+
+  const syncDefaults = options.syncDefaults !== false;
+
   const getTagId = db.prepare("SELECT id FROM tags WHERE name = ?");
   const findCat = db.prepare("SELECT id FROM categories WHERE name = ?");
 
@@ -1325,14 +1345,30 @@ export function initDefaultTags(
       const cat = findCat.get(catName) as { id: number } | undefined;
       const meta = defaultTagMeta[name];
       const description = meta?.description ?? null;
-      insertTag.run(name, cat ? cat.id : null, description);
 
-      // Add keywords/aliases for the tag
-      if (meta?.keywords && meta.keywords.length > 0) {
-        const tagRow = getTagId.get(name) as { id: number } | undefined;
-        if (tagRow) {
-          for (const keyword of meta.keywords) {
-            insertAlias.run(tagRow.id, keyword);
+      // Sync tag metadata
+      if (syncDefaults) {
+        upsertTag.run(name, cat ? cat.id : null, description);
+      } else {
+        insertTagOnly.run(name, cat ? cat.id : null, description);
+      }
+
+      const tagRow = getTagId.get(name) as { id: number } | undefined;
+      if (!tagRow) continue;
+
+      // Full-sync aliases for default tags
+      if (syncDefaults) {
+        deleteDefaultAliases.run(tagRow.id);
+        if (meta?.keywords && meta.keywords.length > 0) {
+          for (let i = 0; i < meta.keywords.length; i++) {
+            insertAliasOrdered.run(tagRow.id, meta.keywords[i], i);
+          }
+        }
+      } else {
+        // Just additive
+        if (meta?.keywords && meta.keywords.length > 0) {
+          for (let i = 0; i < meta.keywords.length; i++) {
+            insertAliasOrdered.run(tagRow.id, meta.keywords[i], i);
           }
         }
       }

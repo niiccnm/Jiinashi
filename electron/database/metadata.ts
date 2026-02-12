@@ -72,11 +72,19 @@ export function deleteCategory(id: number) {
 }
 
 export function addCategoryAliases(categoryId: number, aliases: string[]) {
-  const insert = getDb().prepare(
-    "INSERT OR IGNORE INTO category_aliases (category_id, alias) VALUES (?, ?)",
+  const db = getDb();
+  const maxRow = db
+    .prepare(
+      "SELECT COALESCE(MAX(sort_order), -1) as max_order FROM category_aliases WHERE category_id = ?",
+    )
+    .get(categoryId) as { max_order: number };
+  let nextOrder = maxRow.max_order + 1;
+
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO category_aliases (category_id, alias, sort_order) VALUES (?, ?, ?)",
   );
-  const many = getDb().transaction((items: string[]) => {
-    for (const alias of items) insert.run(categoryId, alias);
+  const many = db.transaction((items: string[]) => {
+    for (const alias of items) insert.run(categoryId, alias, nextOrder++);
   });
   many(aliases);
 }
@@ -89,7 +97,9 @@ export function removeCategoryAlias(categoryId: number, alias: string) {
 
 export function getCategoryAliases(categoryId: number): string[] {
   const rows = getDb()
-    .prepare("SELECT alias FROM category_aliases WHERE category_id = ?")
+    .prepare(
+      "SELECT alias FROM category_aliases WHERE category_id = ? ORDER BY sort_order ASC",
+    )
     .all(categoryId) as { alias: string }[];
   return rows.map((r) => r.alias);
 }
@@ -108,6 +118,7 @@ export function ensureCategory(name: string): number {
 export function initDefaultCategories(
   db: Database.Database,
   shouldImport: boolean,
+  syncDefaults: boolean = true,
 ) {
   if (!shouldImport) return;
 
@@ -133,10 +144,22 @@ export function initDefaultCategories(
     "Expressions",
   ];
 
-  const insertCat = db.prepare(
-    "INSERT OR IGNORE INTO categories (name, is_default) VALUES (?, 1)",
-  );
-  for (const cat of defaultCategories) insertCat.run(cat);
+  const upsertCat = db.prepare(`
+    INSERT INTO categories (name, is_default) VALUES (?, 1)
+    ON CONFLICT(name) DO UPDATE SET is_default = 1
+    WHERE is_default = 1
+  `);
+  const insertCatOnly = db.prepare(`
+    INSERT OR IGNORE INTO categories (name, is_default) VALUES (?, 1)
+  `);
+
+  for (const cat of defaultCategories) {
+    if (syncDefaults) {
+      upsertCat.run(cat);
+    } else {
+      insertCatOnly.run(cat);
+    }
+  }
 
   const updateCatDefault = db.prepare(
     "UPDATE categories SET is_default = 1 WHERE name = ?",
@@ -148,18 +171,34 @@ export function initDefaultCategories(
     Copyright: { keywords: ["Parody"] },
   };
 
+  const deleteDefaultAliases = db.prepare(`
+    DELETE FROM category_aliases 
+    WHERE category_id = ? 
+    AND category_id IN (SELECT id FROM categories WHERE is_default = 1)
+  `);
+
   const insertCatAlias = db.prepare(
-    "INSERT OR IGNORE INTO category_aliases (category_id, alias) VALUES (?, ?)",
+    "INSERT OR IGNORE INTO category_aliases (category_id, alias, sort_order) VALUES (?, ?, ?)",
   );
   const findCatId = db.prepare("SELECT id FROM categories WHERE name = ?");
 
   for (const catName of defaultCategories) {
     const meta = defaultCategoryMeta[catName];
-    if (meta?.keywords) {
-      const catRow = findCatId.get(catName) as { id: number } | undefined;
-      if (catRow) {
-        for (const keyword of meta.keywords) {
-          insertCatAlias.run(catRow.id, keyword);
+    const catRow = findCatId.get(catName) as { id: number } | undefined;
+    if (catRow) {
+      if (syncDefaults) {
+        deleteDefaultAliases.run(catRow.id);
+        if (meta?.keywords) {
+          for (let i = 0; i < meta.keywords.length; i++) {
+            insertCatAlias.run(catRow.id, meta.keywords[i], i);
+          }
+        }
+      } else {
+        // Just additive
+        if (meta?.keywords) {
+          for (let i = 0; i < meta.keywords.length; i++) {
+            insertCatAlias.run(catRow.id, meta.keywords[i], i);
+          }
         }
       }
     }
@@ -251,18 +290,28 @@ export function deleteType(id: number) {
 
 export function getTypeAliases(typeId: number): string[] {
   const rows = getDb()
-    .prepare("SELECT alias FROM type_aliases WHERE type_id = ?")
+    .prepare(
+      "SELECT alias FROM type_aliases WHERE type_id = ? ORDER BY sort_order ASC",
+    )
     .all(typeId) as { alias: string }[];
   return rows.map((r) => r.alias);
 }
 
 export function addTypeAliases(typeId: number, aliases: string[]) {
   if (aliases.length === 0) return;
-  const stmt = getDb().prepare(
-    "INSERT OR IGNORE INTO type_aliases (type_id, alias) VALUES (?, ?)",
+  const db = getDb();
+  const maxRow = db
+    .prepare(
+      "SELECT COALESCE(MAX(sort_order), -1) as max_order FROM type_aliases WHERE type_id = ?",
+    )
+    .get(typeId) as { max_order: number };
+  let nextOrder = maxRow.max_order + 1;
+
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO type_aliases (type_id, alias, sort_order) VALUES (?, ?, ?)",
   );
   for (const alias of aliases) {
-    stmt.run(typeId, alias.trim());
+    stmt.run(typeId, alias.trim(), nextOrder++);
   }
 }
 
@@ -272,7 +321,11 @@ export function removeTypeAlias(typeId: number, alias: string) {
     .run(typeId, alias);
 }
 
-export function initDefaultTypes(db: Database.Database, shouldImport: boolean) {
+export function initDefaultTypes(
+  db: Database.Database,
+  shouldImport: boolean,
+  syncDefaults: boolean = true,
+) {
   if (!shouldImport) return;
   const defaultTypes = [
     {
@@ -291,10 +344,22 @@ export function initDefaultTypes(db: Database.Database, shouldImport: boolean) {
       description: "Collection of CGs from a single artist",
     },
   ];
-  const insertType = db.prepare(
-    "INSERT OR IGNORE INTO content_types (name, description, is_default) VALUES (?, ?, 1)",
-  );
-  for (const type of defaultTypes) insertType.run(type.name, type.description);
+  const upsertType = db.prepare(`
+    INSERT INTO content_types (name, description, is_default) VALUES (?, ?, 1)
+    ON CONFLICT(name) DO UPDATE SET description = excluded.description
+    WHERE is_default = 1
+  `);
+  const insertTypeOnly = db.prepare(`
+    INSERT OR IGNORE INTO content_types (name, description, is_default) VALUES (?, ?, 1)
+  `);
+
+  for (const type of defaultTypes) {
+    if (syncDefaults) {
+      upsertType.run(type.name, type.description);
+    } else {
+      insertTypeOnly.run(type.name, type.description);
+    }
+  }
   const updateDefault = db.prepare(
     "UPDATE content_types SET is_default = 1 WHERE name = ?",
   );
@@ -402,7 +467,9 @@ export function getTagExportData(options: {
       };
       if (options.includeKeywords) {
         const aliases = db_local
-          .prepare("SELECT alias FROM tag_aliases WHERE tag_id = ?")
+          .prepare(
+            "SELECT alias FROM tag_aliases WHERE tag_id = ? ORDER BY sort_order ASC",
+          )
           .all(t.id) as { alias: string }[];
         exportTag.keywords = aliases.map((a) => a.alias);
       }
@@ -424,7 +491,9 @@ export function getTagExportData(options: {
       };
       if (options.includeKeywords) {
         const aliases = db_local
-          .prepare("SELECT alias FROM type_aliases WHERE type_id = ?")
+          .prepare(
+            "SELECT alias FROM type_aliases WHERE type_id = ? ORDER BY sort_order ASC",
+          )
           .all(t.id) as { alias: string }[];
         exp.keywords = aliases.map((a) => a.alias);
       }

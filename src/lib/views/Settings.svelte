@@ -451,6 +451,60 @@
                 ></div>
               </div>
             </div>
+
+            <div class="h-px bg-white/[0.06] mx-5"></div>
+
+            <!-- Sync Default Data Toggle -->
+            <div
+              class="group flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors cursor-pointer outline-none focus:bg-white/[0.04]"
+              role="button"
+              tabindex="0"
+              onclick={() =>
+                updateSetting(
+                  "syncDefaultData",
+                  !settings["syncDefaultData"] ||
+                    settings["syncDefaultData"] === "false"
+                    ? "true"
+                    : "false",
+                )}
+              onkeydown={(e) =>
+                e.key === "Enter" &&
+                updateSetting(
+                  "syncDefaultData",
+                  !settings["syncDefaultData"] ||
+                    settings["syncDefaultData"] === "false"
+                    ? "true"
+                    : "false",
+                )}
+            >
+              <div class="flex flex-col">
+                <div class="flex items-center gap-2">
+                  <span
+                    class="text-base font-medium text-slate-200 group-hover:text-white transition-colors"
+                    >Sync Default Data on Startup</span
+                  >
+                  {#if settings["syncDefaultData"] === "false"}
+                    <span
+                      class="text-[10px] bg-amber-500/20 text-amber-500 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider"
+                      >Manual Mode</span
+                    >
+                  {/if}
+                </div>
+                <span class="text-sm text-slate-500"
+                  >Keep default tags updated. Turn off to preserve your manual
+                  edits.</span
+                >
+              </div>
+
+              <!-- Toggle Switch -->
+              <div
+                class={`relative w-12 h-7 rounded-full transition-colors duration-300 ${!settings["syncDefaultData"] || settings["syncDefaultData"] === "true" ? "bg-blue-600" : "bg-slate-700"}`}
+              >
+                <div
+                  class={`absolute left-1 top-1 bg-white w-5 h-5 rounded-full shadow-sm transition-transform duration-300 ${!settings["syncDefaultData"] || settings["syncDefaultData"] === "true" ? "translate-x-5" : "translate-x-0"}`}
+                ></div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -823,17 +877,13 @@
               onclick={() =>
                 updateSetting(
                   "mangaMode",
-                  !settings["mangaMode"] || settings["mangaMode"] === "false"
-                    ? "true"
-                    : "false",
+                  settings["mangaMode"] === "false" ? "true" : "false",
                 )}
               onkeydown={(e) =>
                 e.key === "Enter" &&
                 updateSetting(
                   "mangaMode",
-                  !settings["mangaMode"] || settings["mangaMode"] === "false"
-                    ? "true"
-                    : "false",
+                  settings["mangaMode"] === "false" ? "true" : "false",
                 )}
             >
               <div class="flex flex-col">
@@ -847,10 +897,10 @@
               </div>
               <!-- Toggle Switch -->
               <div
-                class={`relative w-12 h-7 rounded-full transition-colors duration-300 ${settings["mangaMode"] === "true" ? "bg-blue-600" : "bg-slate-700"}`}
+                class={`relative w-12 h-7 rounded-full transition-colors duration-300 ${!settings["mangaMode"] || settings["mangaMode"] === "true" ? "bg-blue-600" : "bg-slate-700"}`}
               >
                 <div
-                  class={`absolute left-1 top-1 bg-white w-5 h-5 rounded-full shadow-sm transition-transform duration-300 ${settings["mangaMode"] === "true" ? "translate-x-5" : "translate-x-0"}`}
+                  class={`absolute left-1 top-1 bg-white w-5 h-5 rounded-full shadow-sm transition-transform duration-300 ${!settings["mangaMode"] || settings["mangaMode"] === "true" ? "translate-x-5" : "translate-x-0"}`}
                 ></div>
               </div>
             </div>

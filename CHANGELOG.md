@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Download History Export**: Added the ability to include completed downloads and queue items in backup files. This option is **enabled by default**.
   - **Optional Download Logs**: Included support for exporting detailed execution logs for each download history item (disabled by default).
   - **Enhanced Backup Portability**: Download history file paths are now automatically normalized to relative paths during export and resolved back to absolute paths during import based on current library roots.
+  - **Files Modified**: `electron/main.ts`, `src/lib/views/Settings.svelte`, `electron/database/database.ts`.
+
+- **RTL Mode Persistence**: The Right-to-Left (Manga Mode) reading setting is now included in backup exports, ensuring your reading preference is preserved when migrating data.
+  - **Default Optimization**: Changed the default reading direction to **Right-to-Left (Manga Mode)** for new installations to better match the content type.
+  - **Files Modified**: `electron/main.ts`, `src/lib/views/Reader.svelte`, `src/lib/views/Settings.svelte`, `electron/database/database.ts`.
 
 ### Changed
 
@@ -73,6 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Files modified: `electron/main.ts`.
 - **Context-Aware File Counting**: The total file counter in the Library header now dynamically reflects the count of the currently selected root folder, providing a more accurate view of individual collections versus the global library total.
   - **Files Modified**: `electron/database/queries/library.ts`, `electron/main.ts`, `electron/preload.ts`, `src/vite-env.d.ts`, `src/lib/views/Library.svelte`.
+
+- **Default Data Synchronization**:
+  - **Auto-Update Mechanism**: The app now automatically syncs default tags, categories, and content types on every startup. This ensures that new descriptions, keyword fixes, and reclassifications from app updates are immediately applied to your existing database.
+  - **User-Respecting Sync Toggle**: Added a new setting "Sync Default Data on Startup" (enabled by default). When disabled, the app switches to an additive-only mode that strictly preserves your manual edits to default tags and descriptions while still adding any strictly new defaults.
+  - **Conflict Resolution**: The sync logic intelligently updates default entries (`is_default = 1`) and re-synchronizes aliases to match the app's definition, while strictly preserving all user-created tags and modifications.
+  - **Ordered Keywords**: Added a new `sort_order` column to alias tables to guarantee that keywords appear in the specific order defined by the application, improving consistency in the Tags view.
+  - **Files Modified**: `electron/database/database.ts`, `electron/database/metadata.ts`, `electron/database/data/tag-defaults.ts`, `electron/database/queries/tags.ts`, `src/lib/views/Settings.svelte`.
 
 ### Deprecated
 

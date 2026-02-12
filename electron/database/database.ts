@@ -188,6 +188,23 @@ export function initDatabase(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_download_history_added_at ON download_history(added_at);
   `);
 
+  // Add sort_order column to alias tables if they don't exist
+  try {
+    database.exec(
+      "ALTER TABLE tag_aliases ADD COLUMN sort_order INTEGER DEFAULT 0",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE category_aliases ADD COLUMN sort_order INTEGER DEFAULT 0",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE type_aliases ADD COLUMN sort_order INTEGER DEFAULT 0",
+    );
+  } catch (e) {}
+
   try {
     database
       .prepare(
@@ -207,7 +224,7 @@ export function initDatabase(): Database.Database {
       ["defaultFitMode", "contain"],
       ["backgroundColor", "#000000"],
       ["enableAnimations", "true"],
-      ["mangaMode", "false"],
+      ["mangaMode", "true"],
       [
         "downloadPath",
         path.join(app.getPath("documents"), "Jiinashi Downloads"),
@@ -217,6 +234,7 @@ export function initDatabase(): Database.Database {
       ["maxHistoryItems", "50"],
       ["strictImport", "true"],
       ["librarySortOrder", "alphabetical"],
+      ["syncDefaultData", "true"],
     ];
 
     const insertSetting = database.prepare(
@@ -253,9 +271,9 @@ export function initDatabase(): Database.Database {
         console.error("[Setup] Error reading install-config.json:", e);
       }
 
-      initDefaultCategories(database, importCategories);
-      initDefaultTags(database, { importTags });
-      initDefaultTypes(database, importTypes);
+      initDefaultCategories(database, importCategories, true);
+      initDefaultTags(database, { importTags, syncDefaults: true });
+      initDefaultTypes(database, importTypes, true);
 
       database.transaction(() => {
         database
@@ -281,12 +299,22 @@ export function initDatabase(): Database.Database {
       const installTypes = database
         .prepare("SELECT value FROM settings WHERE key = 'installTypes'")
         .get() as { value: string } | undefined;
+      const syncDefaults = database
+        .prepare("SELECT value FROM settings WHERE key = 'syncDefaultData'")
+        .get() as { value: string } | undefined;
 
-      initDefaultCategories(database, installCategories?.value === "true");
+      const isSyncing = syncDefaults?.value !== "false";
+
+      initDefaultCategories(
+        database,
+        installCategories?.value === "true",
+        isSyncing,
+      );
       initDefaultTags(database, {
         importTags: installTags?.value === "true",
+        syncDefaults: isSyncing,
       });
-      initDefaultTypes(database, installTypes?.value === "true");
+      initDefaultTypes(database, installTypes?.value === "true", isSyncing);
     }
 
     const duplicates = database

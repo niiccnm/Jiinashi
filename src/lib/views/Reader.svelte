@@ -39,7 +39,7 @@
   // Settings
   let viewMode = $state<"single" | "double" | "webtoon">("single");
   let fitMode = $state<"width" | "height" | "contain" | "fill">("contain");
-  let mangaMode = $state(false);
+  let mangaMode = $state(true);
   let brightness = $state(100);
   let contrast = $state(100);
   let gamma = $state(100);
@@ -450,7 +450,7 @@
     const settings = await window.electronAPI.settings.getAll();
     viewMode = (settings.defaultViewMode as any) || "single";
     fitMode = (settings.defaultFitMode as any) || "contain";
-    mangaMode = settings.mangaMode === "true";
+    mangaMode = settings.mangaMode !== "false";
     backgroundColor = settings.backgroundColor || "#000000";
   }
 

@@ -1707,6 +1707,7 @@ function registerIpcHandlers() {
           blurR18: getSetting("blurR18"),
           blurR18Hover: getSetting("blurR18Hover"),
           blurR18Intensity: getSetting("blurR18Intensity"),
+          mangaMode: getSetting("mangaMode"),
         };
 
         // Buffer download history (default: ON unless explicitly false)

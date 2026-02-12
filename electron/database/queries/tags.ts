@@ -41,7 +41,7 @@ export function getAllTagsWithAliases(): TagWithAliases[] {
   const placeholders = tagIds.map(() => "?").join(",");
   const aliasRows = getDb()
     .prepare(
-      `SELECT tag_id, alias FROM tag_aliases WHERE tag_id IN (${placeholders})`,
+      `SELECT tag_id, alias FROM tag_aliases WHERE tag_id IN (${placeholders}) ORDER BY sort_order ASC`,
     )
     .all(...tagIds) as { tag_id: number; alias: string }[];
   const aliasMap = new Map<number, string[]>();
@@ -132,11 +132,19 @@ export function deleteTag(id: number) {
 }
 
 export function addTagAliases(tagId: number, aliases: string[]) {
-  const insert = getDb().prepare(
-    "INSERT OR IGNORE INTO tag_aliases (tag_id, alias) VALUES (?, ?)",
+  const db = getDb();
+  const maxRow = db
+    .prepare(
+      "SELECT COALESCE(MAX(sort_order), -1) as max_order FROM tag_aliases WHERE tag_id = ?",
+    )
+    .get(tagId) as { max_order: number };
+  let nextOrder = maxRow.max_order + 1;
+
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO tag_aliases (tag_id, alias, sort_order) VALUES (?, ?, ?)",
   );
-  const many = getDb().transaction((items: string[]) => {
-    for (const alias of items) insert.run(tagId, alias);
+  const many = db.transaction((items: string[]) => {
+    for (const alias of items) insert.run(tagId, alias, nextOrder++);
   });
   many(aliases);
 }
@@ -149,7 +157,9 @@ export function removeTagAlias(tagId: number, alias: string) {
 
 export function getTagAliases(tagId: number): string[] {
   const rows = getDb()
-    .prepare("SELECT alias FROM tag_aliases WHERE tag_id = ?")
+    .prepare(
+      "SELECT alias FROM tag_aliases WHERE tag_id = ? ORDER BY sort_order ASC",
+    )
     .all(tagId) as { alias: string }[];
   return rows.map((r) => r.alias);
 }
