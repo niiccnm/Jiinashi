@@ -134,6 +134,7 @@ import {
   extractCoverFromFolder,
   getCoverAsDataUrl,
   clearCoverCache,
+  deleteCachedCover,
 } from "./coverExtractor";
 import { ArchiveHandler } from "./archives/archive";
 import type { IArchiveHandler } from "./archives/archive";
@@ -409,6 +410,8 @@ import {
   bulkSetContentType,
   bulkAddItemTypes,
   bulkRemoveItemTypes,
+  incrementMissCount,
+  resetMissCount,
 } from "./database/database";
 import type {
   LibraryItem,
@@ -499,7 +502,7 @@ const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
 
-function createWindow() {
+async function createWindow() {
   const standardUA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
   // Set browser-grade UA to avoid Cloudflare detection loops
@@ -604,6 +607,7 @@ function createWindow() {
 
   initDatabase();
   initCoverCache();
+  await runIntegrityCheck();
 
   registerIpcHandlers();
 
@@ -895,6 +899,32 @@ function createReaderWindow(bookId: number, pageIndex?: number) {
     require("electron").shell.openExternal(url);
     return { action: "deny" };
   });
+}
+
+async function runIntegrityCheck(): Promise<void> {
+  const MISS_THRESHOLD = 3;
+  const allItems = getAllItemsFlat();
+
+  for (const item of allItems) {
+    const pathExists = fs.existsSync(item.path);
+
+    if (pathExists) {
+      if (item.miss_count && item.miss_count > 0) {
+        resetMissCount(item.id);
+      }
+    } else {
+      incrementMissCount(item.id);
+
+      const newMissCount = (item.miss_count || 0) + 1;
+
+      if (newMissCount >= MISS_THRESHOLD) {
+        if (item.cover_path) {
+          deleteCachedCover(item.path);
+        }
+        deleteItem(item.id);
+      }
+    }
+  }
 }
 
 type ScanProgressPayload = { count: number; item: LibraryItem | null };

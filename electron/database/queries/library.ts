@@ -751,3 +751,33 @@ export function clearPageVisibility(itemId?: number) {
     db.prepare("DELETE FROM page_visibility").run();
   }
 }
+
+// --- ORPHAN CLEANUP OPERATIONS ---------------------------------------------
+export function incrementMissCount(id: number) {
+  getDb()
+    .prepare(
+      "UPDATE library_items SET miss_count = COALESCE(miss_count, 0) + 1 WHERE id = ?",
+    )
+    .run(id);
+}
+
+export function resetMissCount(id: number) {
+  getDb()
+    .prepare("UPDATE library_items SET miss_count = 0 WHERE id = ?")
+    .run(id);
+}
+
+export function resetMissCountBulk(ids: number[]) {
+  if (ids.length === 0) return;
+  const db = getDb();
+  const placeholders = ids.map(() => "?").join(",");
+  db.prepare(
+    `UPDATE library_items SET miss_count = 0 WHERE id IN (${placeholders})`,
+  ).run(...ids);
+}
+
+export function getOrphanedItems(threshold: number): LibraryItem[] {
+  return getDb()
+    .prepare("SELECT * FROM library_items WHERE miss_count >= ?")
+    .all(threshold) as LibraryItem[];
+}

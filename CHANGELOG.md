@@ -104,6 +104,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dropdown Styling**: Fixed an issue where Settings dropdown options appeared with incorrect light-themed/grey colors when the mouse was moved off the menu.
   - **Files Modified**: `src/app.css`.
 
+- **Orphaned Data Cleanup System**:
+  - **Automatic Integrity Check**: Implemented a "3-strike" graduated miss counter that runs on every startup. Library items whose files are missing are flagged, and only removed after 3 consecutive startup checks confirm their absence. This prevents accidental data loss from temporary issues like unmounted external drives.
+  - **Comprehensive Cleanup**: Automatically removes all associated data (tags, types, reading progress, page bookmarks) and cleans up cached cover images when an orphaned item is finally removed.
+  - **Files Modified**: `electron/main.ts`, `electron/database/database.ts`, `electron/database/queries/library.ts`, `electron/coverExtractor.ts`.
+
 ### Security
 
 - Vulnerability fixes

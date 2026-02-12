@@ -22,6 +22,7 @@ export interface LibraryItem {
   tags_list?: string;
   types_list?: string;
   content_type?: string | null;
+  miss_count?: number;
 }
 
 export interface SearchResult extends LibraryItem {
@@ -202,6 +203,11 @@ export function initDatabase(): Database.Database {
   try {
     database.exec(
       "ALTER TABLE type_aliases ADD COLUMN sort_order INTEGER DEFAULT 0",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE library_items ADD COLUMN miss_count INTEGER DEFAULT 0",
     );
   } catch (e) {}
 
