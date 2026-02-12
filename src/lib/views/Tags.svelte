@@ -106,7 +106,7 @@
     const name = tag.name.toLowerCase();
     const q = query.toLowerCase();
     const aliases: string[] = (tag.aliases || []).map((a: string) =>
-      a.toLowerCase()
+      a.toLowerCase(),
     );
 
     // Name matching
@@ -170,7 +170,7 @@
         .sort((a, b) =>
           a.score !== b.score
             ? a.score - b.score
-            : a.tag.name.localeCompare(b.tag.name)
+            : a.tag.name.localeCompare(b.tag.name),
         );
       filteredTags = scoredTags.map((item) => item.tag);
     }
@@ -208,7 +208,7 @@
         const newTag = await window.electronAPI.tags.create(
           editingTag.name,
           editingTag.category_id,
-          editingTag.description
+          editingTag.description,
         );
         // Then add aliases if any
         if (tagAliases.length > 0) {
@@ -373,23 +373,23 @@
     if (isDoubleClick) {
       if (categoryListExcludedIds.includes(id)) {
         categoryListExcludedIds = categoryListExcludedIds.filter(
-          (x) => x !== id
+          (x) => x !== id,
         );
       } else {
         categoryListSelectedIds = categoryListSelectedIds.filter(
-          (x) => x !== id
+          (x) => x !== id,
         );
         categoryListExcludedIds = [...categoryListExcludedIds, id];
       }
     } else {
       if (categoryListExcludedIds.includes(id)) {
         categoryListExcludedIds = categoryListExcludedIds.filter(
-          (x) => x !== id
+          (x) => x !== id,
         );
       } else {
         if (categoryListSelectedIds.includes(id)) {
           categoryListSelectedIds = categoryListSelectedIds.filter(
-            (x) => x !== id
+            (x) => x !== id,
           );
         } else {
           categoryListSelectedIds = [...categoryListSelectedIds, id];
@@ -526,12 +526,12 @@
       if (isCreatingCategory) {
         const newCat = await window.electronAPI.categories.create(
           editingCategory.name,
-          editingCategory.description
+          editingCategory.description,
         );
         if (categoryAliases.length > 0) {
           await window.electronAPI.categories.addAliases(
             newCat.id,
-            categoryAliases
+            categoryAliases,
           );
         }
       } else {
@@ -577,7 +577,7 @@
       try {
         await window.electronAPI.categories.removeAlias(
           editingCategory.id,
-          alias
+          alias,
         );
         categoryAliases = categoryAliases.filter((a) => a !== alias);
       } catch (e: any) {
@@ -621,7 +621,7 @@
       filteredTypes = baseTypes.filter(
         (t) =>
           t.name.toLowerCase().includes(q) ||
-          t.aliases.some((a: string) => a.toLowerCase().includes(q))
+          t.aliases.some((a: string) => a.toLowerCase().includes(q)),
       );
     }
   }
@@ -652,7 +652,7 @@
       if (isCreatingType) {
         const created = await window.electronAPI.types.create(
           editingType.name,
-          editingType.description
+          editingType.description,
         );
         if (typeAliases.length > 0) {
           await window.electronAPI.types.addAliases(created.id, typeAliases);
@@ -786,8 +786,23 @@
       class="w-80 lg:w-96 flex flex-col border-r border-slate-800 bg-slate-925"
     >
       {#if activeTab === "tags"}
-        <div class="p-4 border-b border-slate-800 bg-slate-925/50">
-          <div class="flex gap-2 mb-3">
+        <div class="p-4 border-b border-slate-800 bg-slate-925/50 space-y-3">
+          <div class="flex items-center justify-between px-0.5">
+            <span
+              class="text-[11px] font-bold text-slate-500 uppercase tracking-widest"
+              >Tags</span
+            >
+            <div class="flex items-baseline gap-1">
+              <span class="text-xs font-bold text-blue-400 tabular-nums"
+                >{filteredTags.length}</span
+              >
+              <span class="text-[10px] font-medium text-slate-600">/</span>
+              <span class="text-xs font-bold text-slate-500 tabular-nums"
+                >{tags.length}</span
+              >
+            </div>
+          </div>
+          <div class="flex gap-2">
             <div class="relative flex-1">
               <input
                 type="text"
@@ -893,7 +908,7 @@
                     <!-- Default/Systems option -->
                     <button
                       class="flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 {selectedCategoryIds.includes(
-                        -1
+                        -1,
                       )
                         ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                         : excludedCategoryIds.includes(-1)
@@ -907,7 +922,7 @@
                     <!-- Uncategorized option -->
                     <button
                       class="flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 {selectedCategoryIds.includes(
-                        0
+                        0,
                       )
                         ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                         : excludedCategoryIds.includes(0)
@@ -976,7 +991,7 @@
               {#if tag.category_name}
                 <span
                   class="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded border {getCategoryStyle(
-                    tag.category_name
+                    tag.category_name,
                   )}"
                 >
                   {tag.category_name}
@@ -987,8 +1002,23 @@
         </div>
       {:else if activeTab === "categories"}
         <!-- Categories List -->
-        <div class="p-4 border-b border-slate-800 bg-slate-925/50">
-          <div class="flex gap-2 mb-3">
+        <div class="p-4 border-b border-slate-800 bg-slate-925/50 space-y-3">
+          <div class="flex items-center justify-between px-0.5">
+            <span
+              class="text-[11px] font-bold text-slate-500 uppercase tracking-widest"
+              >Categories</span
+            >
+            <div class="flex items-baseline gap-1">
+              <span class="text-xs font-bold text-blue-400 tabular-nums"
+                >{filteredCategories.length}</span
+              >
+              <span class="text-[10px] font-medium text-slate-600">/</span>
+              <span class="text-xs font-bold text-slate-500 tabular-nums"
+                >{categories.length}</span
+              >
+            </div>
+          </div>
+          <div class="flex gap-2">
             <div class="relative flex-1">
               <input
                 type="text"
@@ -1094,7 +1124,7 @@
                   <div class="flex flex-col gap-1.5">
                     <button
                       class="flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 {categoryListSelectedIds.includes(
-                        -1
+                        -1,
                       )
                         ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                         : categoryListExcludedIds.includes(-1)
@@ -1149,8 +1179,23 @@
         </div>
       {:else if activeTab === "types"}
         <!-- Types List -->
-        <div class="p-4 border-b border-slate-800 bg-slate-925/50">
-          <div class="flex gap-2 mb-3">
+        <div class="p-4 border-b border-slate-800 bg-slate-925/50 space-y-3">
+          <div class="flex items-center justify-between px-0.5">
+            <span
+              class="text-[11px] font-bold text-slate-500 uppercase tracking-widest"
+              >Types</span
+            >
+            <div class="flex items-baseline gap-1">
+              <span class="text-xs font-bold text-blue-400 tabular-nums"
+                >{filteredTypes.length}</span
+              >
+              <span class="text-[10px] font-medium text-slate-600">/</span>
+              <span class="text-xs font-bold text-slate-500 tabular-nums"
+                >{contentTypes.length}</span
+              >
+            </div>
+          </div>
+          <div class="flex gap-2">
             <div class="relative flex-1">
               <input
                 type="text"
@@ -1255,7 +1300,7 @@
                   <div class="flex flex-col gap-1.5">
                     <button
                       class="flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 {typeListSelectedIds.includes(
-                        -1
+                        -1,
                       )
                         ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                         : typeListExcludedIds.includes(-1)

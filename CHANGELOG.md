@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Default Optimization**: Changed the default reading direction to **Right-to-Left (Manga Mode)** for new installations to better match the content type.
   - **Files Modified**: `electron/main.ts`, `src/lib/views/Reader.svelte`, `src/lib/views/Settings.svelte`, `electron/database/database.ts`.
 
+- **Tag Manager Counters**: Added item counters to the Tags, Categories, and Types tabs to show the number of items currently displayed (filtered) versus the total available.
+  - **Files Modified**: `src/lib/views/Tags.svelte`.
+
 ### Changed
 
 - **Database Restructure**: Refactored the monolithic `electron/database.ts` into a modular `electron/database/` directory structure.
