@@ -871,7 +871,7 @@ export function initDefaultTags(
     decensored: { keywords: ["uncensored"] },
 
     // Language
-    Chinese: { keywords: ["ZH", "中文"] },
+    Chinese: { keywords: ["ZH", "CN", "中文"] },
     English: { keywords: ["EN"] },
     Japanese: { keywords: ["JP", "日本語"] },
     Korean: { keywords: ["KR", "한국어"] },

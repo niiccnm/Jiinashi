@@ -230,6 +230,10 @@ export class HitomiParser implements ISiteParser {
       return ns ? `${ns}:${t.tag}` : t.tag;
     });
 
+    if (info.language) {
+      hitomiTags.push(`language:${info.language.toLowerCase().trim()}`);
+    }
+
     const combinedTags = Array.from(
       new Set([...hitomiTags, ...ehMetadata.tags]),
     );

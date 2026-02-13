@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New features or functionality
+
+### Changed
+
+- Changes in existing functionality
+
+### Deprecated
+
+- Soon-to-be removed features
+
+### Removed
+
+- Now removed features
+
+### Fixed
+
+- **Download Metadata Reactivity**: Fixed an issue where language badges (e.g., [EN], [JP]) were not visible on downloaded items in the library view until the application was restarted, even though the tags were correctly assigned.
+  - **Files Modified**: `electron/downloader/manager.ts`.
+- **Hitomi Language Tags**: Fixed an issue where downloads from Hitomi.la were missing language tags if the cross-referenced E-Hentai metadata didn't provide them. The parser now also checks Hitomi's own metadata for language information.
+  - **Files Modified**: `electron/downloader/parsers/hitomi.ts`.
+
+### Security
+
+- Vulnerability fixes
+
+---
+
+## [v0.0.2] - 2026-02-12
+
+### Added
+
 - **Integrated In-Downloader System**: A built-in, high-performance download manager that fetches your content quickly and effortlessly.
   - **Site Support**: Native downloads straight from **nhentai**, **E-Hentai / ExHentai**, and **Hitomi.la**.
   - **Dynamic Quality Optimization**: Merges metadata across sources (e.g., EH + Hitomi) to select the highest resolution image version available.
@@ -89,10 +120,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Ordered Keywords**: Added a new `sort_order` column to alias tables to guarantee that keywords appear in the specific order defined by the application, improving consistency in the Tags view.
   - **Files Modified**: `electron/database/database.ts`, `electron/database/metadata.ts`, `electron/database/data/tag-defaults.ts`, `electron/database/queries/tags.ts`, `src/lib/views/Settings.svelte`.
 
-### Deprecated
-
-- Soon-to-be removed features
-
 ### Removed
 
 - **Unsupported Formats**: Removed incomplete handlers for `.7z`, `.cb7`, and `.pdf` which lacked required dependencies.
@@ -112,9 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Comprehensive Cleanup**: Automatically removes all associated data (tags, types, reading progress, page bookmarks) and cleans up cached cover images when an orphaned item is finally removed.
   - **Files Modified**: `electron/main.ts`, `electron/database/database.ts`, `electron/database/queries/library.ts`, `electron/coverExtractor.ts`.
 
-### Security
-
-- Vulnerability fixes
+---
 
 ## [0.0.1] - 2026-01-14
 

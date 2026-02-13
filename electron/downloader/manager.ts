@@ -879,6 +879,15 @@ export class DownloaderManager {
                 if (tid) db.bulkAddItemTypes([item.id], [tid]);
               }
             }
+
+            // Refetch and notify frontend to update UI (tags, languages, etc)
+            const updatedItem = db.getItemById(item.id);
+            if (updatedItem) {
+              this.mainWindow?.webContents.send(
+                "library:item-updated",
+                updatedItem,
+              );
+            }
             return;
           }
         }
