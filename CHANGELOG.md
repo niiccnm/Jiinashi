@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Files Modified**: `electron/downloader/parsers/hitomi.ts`.
 - **Folder Renaming**: Fixed a critical issue where renaming a folder would not update the paths of its contained items, causing them to become inaccessible. Implemented a robust recursive update system with transactional safety and automatic rollback.
   - **Files Modified**: `electron/main.ts`, `electron/database/queries/library.ts`.
+- **Item Disappearance**: Fixed a critical bug where items would disappear from the library view when navigating between folders or updating item properties. The issue was due to incorrect cache key parsing in the frontend when using multiple library roots.
+  - **Files Modified**: `src/lib/views/Library.svelte`.
 
 ### Security
 

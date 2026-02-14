@@ -137,6 +137,11 @@
 
   let itemsCache = new Map<string, LibraryItem[]>();
   let loading = $state(false);
+
+  function getCacheKey(folderId: number | null): string {
+    return `${selectedRoot || "all"}:${folderId?.toString() ?? "root"}`;
+  }
+
   let searchQuery = $state("");
   let searchResults = $state<LibraryItem[]>([]); // New state for global results
   let isSearching = $state(false);
@@ -896,7 +901,7 @@
           );
         }
 
-        const key = currentFolderId?.toString() ?? "root";
+        const key = getCacheKey(currentFolderId);
         if (itemsCache.has(key)) {
           itemsCache.set(
             key,
@@ -931,7 +936,7 @@
           );
         }
 
-        const key = currentFolderId?.toString() ?? "root";
+        const key = getCacheKey(currentFolderId);
         if (itemsCache.has(key)) {
           itemsCache.set(
             key,
@@ -1063,7 +1068,7 @@
 
       viewStack[activeIndex].items = filterList(viewStack[activeIndex].items);
 
-      const key = currentFolderId?.toString() ?? "root";
+      const key = getCacheKey(currentFolderId);
       if (itemsCache.has(key)) {
         itemsCache.set(key, filterList(itemsCache.get(key)!));
       }
@@ -1218,10 +1223,12 @@
         });
 
         itemsCache.forEach((items, key) => {
-          const numericKey = typeof key === "string" ? parseInt(key) : key;
+          const parts = key.split(":");
+          const idPart = parts[parts.length - 1]; // Last part is id or "root"
+          const cacheFolderId = idPart === "root" ? null : parseInt(idPart);
           const hasItem = items.some((i) => i.id === updatedItem.id);
 
-          if (hasItem && updatedItem.parent_id !== numericKey) {
+          if (hasItem && updatedItem.parent_id !== cacheFolderId) {
             itemsCache.set(
               key,
               items.filter((i) => i.id !== updatedItem.id),
@@ -1355,7 +1362,7 @@
   }
 
   async function refreshCurrentView() {
-    const key = currentFolderId?.toString() ?? "root";
+    const key = getCacheKey(currentFolderId);
     itemsCache.delete(key); // Clear cache
     const getItems = window.electronAPI.library.getItems as any;
     const newItems = await getItems(currentFolderId, selectedRoot);
