@@ -352,6 +352,59 @@ export function updateItem(id: number, updates: Partial<LibraryItem>) {
     .run(...values, id);
 }
 
+export function renameItemWithChildren(
+  id: number,
+  newTitle: string,
+  newPath: string,
+) {
+  const db = getDb();
+  const normalizedNewPath = newPath.replace(/\\/g, "/");
+
+  const item = db
+    .prepare("SELECT path FROM library_items WHERE id = ?")
+    .get(id) as { path: string } | undefined;
+
+  if (!item) throw new Error("Item not found");
+
+  const oldPath = item.path.replace(/\\/g, "/");
+  const updateStmt = db.prepare(
+    "UPDATE library_items SET path = ? WHERE id = ?",
+  );
+
+  db.transaction(() => {
+    db.prepare("UPDATE library_items SET title = ?, path = ? WHERE id = ?").run(
+      newTitle,
+      normalizedNewPath,
+      id,
+    );
+
+    const descendants = db
+      .prepare(
+        `
+      WITH RECURSIVE descendants(id, path) AS (
+        SELECT id, path FROM library_items WHERE parent_id = ?
+        UNION ALL
+        SELECT li.id, li.path
+        FROM library_items li
+        JOIN descendants d ON li.parent_id = d.id
+      )
+      SELECT id, path FROM descendants
+    `,
+      )
+      .all(id) as { id: number; path: string }[];
+
+    const lowerOldPath = oldPath.toLowerCase();
+
+    for (const descendant of descendants) {
+      const descPath = descendant.path.replace(/\\/g, "/");
+      if (descPath.toLowerCase().startsWith(lowerOldPath)) {
+        const relativePath = descPath.substring(oldPath.length);
+        updateStmt.run(normalizedNewPath + relativePath, descendant.id);
+      }
+    }
+  })();
+}
+
 export function deleteItem(id: number) {
   getDb()
     .prepare(

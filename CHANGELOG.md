@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Files Modified**: `electron/downloader/manager.ts`.
 - **Hitomi Language Tags**: Fixed an issue where downloads from Hitomi.la were missing language tags if the cross-referenced E-Hentai metadata didn't provide them. The parser now also checks Hitomi's own metadata for language information.
   - **Files Modified**: `electron/downloader/parsers/hitomi.ts`.
+- **Folder Renaming**: Fixed a critical issue where renaming a folder would not update the paths of its contained items, causing them to become inaccessible. Implemented a robust recursive update system with transactional safety and automatic rollback.
+  - **Files Modified**: `electron/main.ts`, `electron/database/queries/library.ts`.
 
 ### Security
 

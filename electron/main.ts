@@ -341,6 +341,7 @@ import {
   getItemByPath,
   getItemById,
   updateItem,
+  renameItemWithChildren,
   deleteItem,
   getTagExportData,
   clearAllItems,
@@ -1648,15 +1649,22 @@ function registerIpcHandlers() {
         await fs.promises.rename(item.path, newPath);
 
         // Update database
-        updateItem(id, {
-          path: newPath,
-          title: newName,
-        });
-
-        // Broadcast update
-        broadcastItemUpdate(id);
-
-        return { success: true };
+        try {
+          renameItemWithChildren(id, newName, newPath);
+          broadcastItemUpdate(id);
+          return { success: true };
+        } catch (dbErr: any) {
+          console.error("DB update failed, rolling back FS rename:", dbErr);
+          try {
+            await fs.promises.rename(newPath, item.path);
+          } catch (rollbackErr) {
+            console.error("Critical: FS Rollback failed:", rollbackErr);
+          }
+          return {
+            success: false,
+            error: "Database update failed: " + dbErr.message,
+          };
+        }
       } catch (e: any) {
         return { success: false, error: e.message };
       }
