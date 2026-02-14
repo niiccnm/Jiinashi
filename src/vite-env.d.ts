@@ -110,7 +110,10 @@ interface Window {
         count?: number;
         error?: string;
       }>;
-      getItems: (parentId?: number | null) => Promise<LibraryItem[]>;
+      getItems: (
+        parentId?: number | null,
+        rootPath?: string,
+      ) => Promise<LibraryItem[]>;
       search: (
         query: string,
         options?: {
@@ -120,7 +123,7 @@ interface Window {
         },
       ) => Promise<LibraryItem[]>;
       getItem: (id: number) => Promise<LibraryItem | undefined>;
-      getFavorites: () => Promise<LibraryItem[]>;
+      getFavorites: (rootPath?: string) => Promise<LibraryItem[]>;
       getRecent: (limit?: number) => Promise<LibraryItem[]>;
       removeFromRecent: (id: number) => Promise<boolean>;
       toggleFavorite: (id: number) => Promise<boolean>;
@@ -188,6 +191,11 @@ interface Window {
       onCleared: (callback: () => void) => () => void;
       onRefreshed: (callback: () => void) => () => void;
       onTriggerScan: (callback: (folderPath: string) => void) => () => void;
+      createFolder: (
+        parentId: number | null,
+        name: string,
+        rootPath?: string,
+      ) => Promise<{ success: boolean; item?: LibraryItem; error?: string }>;
     };
     reader: {
       getPage: (

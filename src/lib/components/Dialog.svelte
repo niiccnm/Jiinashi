@@ -39,6 +39,7 @@
         return "bg-slate-700 hover:bg-slate-600 text-white";
     }
   }
+  let mouseDownTarget: EventTarget | null = null;
 </script>
 
 {#if open}
@@ -47,8 +48,13 @@
     class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
     transition:fade={{ duration: 200 }}
     role="presentation"
+    onmousedown={(e) => {
+      mouseDownTarget = e.target;
+    }}
     onclick={(e) => {
-      if (e.target === e.currentTarget) onCancel();
+      if (e.target === e.currentTarget && mouseDownTarget === e.currentTarget) {
+        onCancel();
+      }
     }}
   >
     <!-- Modal Container (to hold shadow separate from overflow-hidden content) -->
@@ -114,7 +120,7 @@
             </button>
             <button
               class="px-4 py-2 text-sm font-medium rounded-lg transition-all flex items-center gap-2 {getButtonStyles(
-                variant
+                variant,
               )} disabled:opacity-50 disabled:cursor-not-allowed"
               onclick={onConfirm}
               disabled={loading}

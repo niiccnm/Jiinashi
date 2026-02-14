@@ -10,11 +10,15 @@
     allIds = [],
     view = "library",
     onRefresh,
+    onMove,
   } = $props<{
     selection: SelectionModel;
     allIds: number[];
     view: "library" | "favorites";
-    onRefresh: (action: "favorite" | "delete" | "tags") => void | Promise<void>;
+    onRefresh: (
+      action: "favorite" | "delete" | "tags" | "move",
+    ) => void | Promise<void>;
+    onMove: () => void;
   }>();
 
   let showBulkTagEditor = $state(false);
@@ -150,6 +154,26 @@
     <div class="h-8 w-px bg-slate-800/80 flex-shrink-0"></div>
 
     <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+      <button
+        onclick={onMove}
+        class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800/80 hover:bg-blue-500/20 text-slate-300 hover:text-blue-400 transition-all border border-slate-700/50 hover:border-blue-500/30 group active:scale-95"
+      >
+        <svg
+          class="w-4 h-4 transition-transform group-hover:scale-110"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+          />
+        </svg>
+        <span class="font-bold text-xs sm:text-sm hidden sm:inline">Move</span>
+      </button>
+
       <button
         onclick={bulkToggleFavorite}
         class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800/80 hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 transition-all border border-slate-700/50 hover:border-rose-500/30 group active:scale-95"

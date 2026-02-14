@@ -14,7 +14,9 @@
   import BulkSelection from "../components/BulkSelection.svelte";
   import ArchiveManager from "../components/ArchiveManager.svelte";
   import FolderSwitcher from "../components/FolderSwitcher.svelte";
+  import MoveToFolderDialog from "../components/MoveToFolderDialog.svelte";
   import { SelectionModel } from "../state/selection.svelte";
+  import { toasts } from "../stores/toast";
   import type { LibraryItem } from "../stores/app";
 
   interface FolderView {
@@ -463,6 +465,13 @@
   function handleGlobalKeydown(e: any) {
     if ($appState.currentView !== "library") return;
 
+    // Keyboard Shortcuts
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "n") {
+      e.preventDefault();
+      openCreateFolderDialog();
+      return;
+    }
+
     if (e.key === "Escape") {
       if (showTagEditor) {
         closeTagEditor();
@@ -690,7 +699,9 @@
     }
   }
 
-  async function handleBulkRefresh(action: "favorite" | "delete" | "tags") {
+  async function handleBulkRefresh(
+    action: "favorite" | "delete" | "tags" | "move",
+  ) {
     await tick();
     if (action === "delete") {
       const filterOut = (list: LibraryItem[]) =>
@@ -701,7 +712,11 @@
       });
       refreshGlobalCount();
       selection.clear();
-    } else if (action === "favorite" || action === "tags") {
+    } else if (
+      action === "favorite" ||
+      action === "tags" ||
+      action === "move"
+    ) {
       // Batch update all modified items at once to prevent multi-render flash
       const updatedItems = await Promise.all(
         selection.ids.map((id) => window.electronAPI.library.getItem(id)),
@@ -762,6 +777,8 @@
 
   let showTagEditor = $state(false);
   let managingArchiveItem = $state<LibraryItem | null>(null);
+  let showMoveDialog = $state(false);
+  let itemsToMove = $state<LibraryItem[]>([]);
   let tagEditorItemId = $state<number | null>(null);
   let tagEditorItemTitle = $state<string>("");
 
@@ -769,6 +786,12 @@
   let showTypeEditor = $state(false);
   let typeEditorItemId = $state<number | null>(null);
   let typeEditorItemTitle = $state<string>("");
+
+  // Create Folder State
+  let showCreateFolderDialog = $state(false);
+  let newFolderName = $state("");
+  let createFolderLoading = $state(false);
+  let createFolderError = $state("");
 
   // Filter State
   interface ContentType {
@@ -967,6 +990,46 @@
     }
   }
 
+  function openCreateFolderDialog() {
+    // Prevent folder creation in "All Collections" if no root is selected
+    if (currentFolderId === null && !selectedRoot) {
+      toasts.add(
+        "Select a library root or navigate into a folder first.",
+        "info",
+      );
+      return;
+    }
+    newFolderName = "";
+    createFolderError = "";
+    showCreateFolderDialog = true;
+  }
+
+  async function handleCreateFolder() {
+    if (!newFolderName.trim()) return;
+    createFolderLoading = true;
+    createFolderError = "";
+
+    try {
+      const result = await window.electronAPI.library.createFolder(
+        currentFolderId,
+        newFolderName.trim(),
+        currentFolderId === null ? selectedRoot : undefined,
+      );
+
+      if (result.success) {
+        showCreateFolderDialog = false;
+        newFolderName = "";
+        // Refresh triggers onRefreshed which reloads items
+      } else {
+        createFolderError = result.error || "Failed to create folder";
+      }
+    } catch (e: any) {
+      createFolderError = e.message;
+    } finally {
+      createFolderLoading = false;
+    }
+  }
+
   function handleShowInFolder(item: LibraryItem) {
     window.electronAPI.library.showInFolder(item.path);
   }
@@ -1113,24 +1176,64 @@
       if (item.parent_id === currentFolderId) {
         pendingItems.push(item);
       }
+
+      // Update local cache to ensure it persists on navigation
+      itemsCache.forEach((cachedItems, key) => {
+        const parts = key.split(":");
+        const idPart = parts[parts.length - 1]; // Last part is id or "root"
+        const cacheFolderId = idPart === "root" ? null : parseInt(idPart);
+
+        if (cacheFolderId === item.parent_id) {
+          if (!cachedItems.some((i) => i.id === item.id)) {
+            itemsCache.set(key, [...cachedItems, item]);
+          }
+        }
+      });
     });
 
     const unsubscribeUpdated = window.electronAPI.library.onItemUpdated(
       (updatedItem) => {
-        viewStack = viewStack.map((v) => ({
-          ...v,
-          items: v.items.map((i) =>
-            i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
-          ),
-        }));
+        viewStack = viewStack.map((v) => {
+          const exists = v.items.some((i) => i.id === updatedItem.id);
+          if (!exists) {
+            if (updatedItem.parent_id === v.id) {
+              return { ...v, items: [...v.items, updatedItem] };
+            }
+            return v;
+          }
 
-        itemsCache.forEach((items, key) => {
-          itemsCache.set(
-            key,
-            items.map((i) =>
+          if (updatedItem.parent_id !== v.id) {
+            return {
+              ...v,
+              items: v.items.filter((i) => i.id !== updatedItem.id),
+            };
+          }
+
+          return {
+            ...v,
+            items: v.items.map((i) =>
               i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
             ),
-          );
+          };
+        });
+
+        itemsCache.forEach((items, key) => {
+          const numericKey = typeof key === "string" ? parseInt(key) : key;
+          const hasItem = items.some((i) => i.id === updatedItem.id);
+
+          if (hasItem && updatedItem.parent_id !== numericKey) {
+            itemsCache.set(
+              key,
+              items.filter((i) => i.id !== updatedItem.id),
+            );
+          } else if (hasItem) {
+            itemsCache.set(
+              key,
+              items.map((i) =>
+                i.id === updatedItem.id ? { ...i, ...updatedItem } : i,
+              ),
+            );
+          }
         });
 
         if (
@@ -1679,6 +1782,62 @@
   </div>
 {/if}
 
+<!-- Create Folder Dialog -->
+{#if showCreateFolderDialog}
+  <Dialog
+    open={showCreateFolderDialog}
+    title="Create New Folder"
+    description="Enter a name for the new folder. This will be created on your filesystem."
+    onCancel={() => (showCreateFolderDialog = false)}
+    onConfirm={handleCreateFolder}
+    confirmText="Create Folder"
+    loading={createFolderLoading}
+  >
+    <div class="space-y-4">
+      <div class="space-y-2">
+        <label
+          for="folderName"
+          class="text-xs font-semibold text-slate-400 ml-1">Folder Name</label
+        >
+        <input
+          id="folderName"
+          type="text"
+          bind:value={newFolderName}
+          use:selectTextOnFocus
+          placeholder="Enter folder name..."
+          class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:border-blue-500/50 transition-all outline-none"
+          onkeydown={(e) => {
+            if (e.key === "Enter") handleCreateFolder();
+            if (e.key === "Escape") showCreateFolderDialog = false;
+          }}
+        />
+        {#if createFolderError}
+          <p class="text-xs text-rose-500 ml-1">{createFolderError}</p>
+        {/if}
+      </div>
+    </div>
+  </Dialog>
+{/if}
+
+<!-- Archive Manager -->
+{#if managingArchiveItem}
+  <ArchiveManager
+    item={managingArchiveItem}
+    onClose={() => (managingArchiveItem = null)}
+  />
+{/if}
+
+<BulkSelection
+  {selection}
+  allIds={stabilizedAllIds}
+  view={$appState?.currentView === "favorites" ? "favorites" : "library"}
+  onRefresh={handleBulkRefresh}
+  onMove={() => {
+    itemsToMove = items.filter((i) => selection.has(i.id));
+    showMoveDialog = true;
+  }}
+/>
+
 {#if isScanning}
   <!-- Scanning UI (Same as before) -->
   <div
@@ -2109,6 +2268,26 @@
       </div>
 
       <button
+        onclick={openCreateFolderDialog}
+        title="Create a new folder (Ctrl+Shift+N)"
+        class="p-2.5 text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-all"
+      >
+        <svg
+          class="w-5 h-5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"
+          />
+        </svg>
+      </button>
+
+      <button
         onclick={handleRescan}
         title="Scan for new files in existing folders"
         class="p-2.5 text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-all"
@@ -2414,6 +2593,30 @@
                           class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
                           onclick={(e) => {
                             closeMenu();
+                            itemsToMove = [item];
+                            showMoveDialog = true;
+                          }}
+                        >
+                          <svg
+                            class="w-4 h-4 text-sky-400 opacity-80"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+                            />
+                          </svg>
+                          Move Item
+                        </button>
+
+                        <button
+                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
+                          onclick={(e) => {
+                            closeMenu();
                             openRenameDialog(item);
                           }}
                         >
@@ -2678,19 +2881,35 @@
   </div>
 {/if}
 
-<BulkSelection
-  {selection}
-  allIds={stabilizedAllIds}
-  view="library"
-  onRefresh={handleBulkRefresh}
-/>
+<MoveToFolderDialog
+  open={showMoveDialog}
+  {itemsToMove}
+  onClose={() => (showMoveDialog = false)}
+  onMoved={async (destinationId: number | string | null) => {
+    const movedIds = new Set(itemsToMove.map((i) => i.id));
 
-{#if managingArchiveItem}
-  <ArchiveManager
-    item={managingArchiveItem}
-    onClose={() => (managingArchiveItem = null)}
-  />
-{/if}
+    viewStack = viewStack.map((v) => ({
+      ...v,
+      items: v.items.filter((i) => !movedIds.has(i.id)),
+    }));
+
+    const destId = typeof destinationId === "number" ? destinationId : null;
+    const destIndex = viewStack.findIndex((v) => v.id === destId);
+    if (destIndex !== -1) {
+      try {
+        const getItems = window.electronAPI.library.getItems as any;
+        viewStack[destIndex].items = await getItems(destId, selectedRoot);
+      } catch {}
+    }
+
+    itemsCache.clear();
+    selection.clear();
+    toasts.add(
+      `Successfully moved ${itemsToMove.length} item${itemsToMove.length > 1 ? "s" : ""}`,
+      "success",
+    );
+  }}
+/>
 
 <style>
   /* Aggressively nuke focus outlines for general elements to keep clean UI */

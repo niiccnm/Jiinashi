@@ -412,6 +412,8 @@ import {
   bulkRemoveItemTypes,
   incrementMissCount,
   resetMissCount,
+  getAllFolders,
+  getDescendants,
 } from "./database/database";
 import type {
   LibraryItem,
@@ -1289,6 +1291,14 @@ function broadcastItemUpdate(id: number) {
   }
 }
 
+function broadcastItemAdded(id: number) {
+  const newItem = getItemById(id);
+  if (!newItem) return;
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("library:item-added", newItem);
+  }
+}
+
 function registerIpcHandlers() {
   ipcMain.handle("dialog:selectFolder", async () => {
     if (!mainWindow) return null;
@@ -1323,6 +1333,129 @@ function registerIpcHandlers() {
         return { success: true, count };
       } catch (e: any) {
         console.error("Scan error:", e);
+        return { success: false, error: e.message };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "library:createFolder",
+    async (_, parentId: number | null, name: string, rootPath?: string) => {
+      try {
+        let parentPath = rootPath;
+        if (parentId !== null) {
+          const parent = getItemById(parentId);
+          if (!parent) throw new Error("Parent folder not found");
+          parentPath = parent.path;
+        }
+
+        if (!parentPath || !fs.existsSync(parentPath)) {
+          throw new Error("Target parent path not found");
+        }
+
+        const safeName = name.replace(/[<>:"/\\|?*]/g, "").trim();
+        if (!safeName) throw new Error("Invalid folder name");
+
+        const targetPath = path.join(parentPath, safeName);
+        if (fs.existsSync(targetPath)) {
+          throw new Error("Folder already exists");
+        }
+
+        await fs.promises.mkdir(targetPath, { recursive: true });
+        const id = addItem({
+          path: targetPath,
+          title: safeName,
+          type: "folder",
+          page_count: 0,
+          cover_path: null,
+          parent_id: parentId,
+          is_favorite: false,
+          reading_status: "unread",
+          current_page: 0,
+          last_read_at: null,
+        });
+
+        const item = getItemById(id);
+        if (item) broadcastItemAdded(id);
+        return { success: true, item };
+      } catch (e: any) {
+        return { success: false, error: e.message };
+      }
+    },
+  );
+
+  ipcMain.handle("library:getAllFolders", () => {
+    try {
+      return {
+        success: true,
+        folders: getAllFolders(),
+        roots: readLibraryRoots(),
+      };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle(
+    "library:moveItems",
+    async (_, itemIds: number[], destinationId: number | string | null) => {
+      try {
+        let destinationPath: string;
+        let finalParentId: number | null = null;
+
+        if (typeof destinationId === "string") {
+          destinationPath = destinationId;
+        } else if (typeof destinationId === "number") {
+          const dest = getItemById(destinationId);
+          if (!dest) throw new Error("Destination not found");
+          destinationPath = dest.path;
+          finalParentId = destinationId;
+        } else throw new Error("Target not specified");
+
+        const results = [];
+        for (const id of itemIds) {
+          const item = getItemById(id);
+          if (!item) continue;
+
+          const oldPath = item.path;
+          const ext = path.extname(oldPath);
+          const base = path.basename(oldPath, ext);
+          let targetPath = path.join(destinationPath, path.basename(oldPath));
+
+          let counter = 1;
+          while (fs.existsSync(targetPath)) {
+            targetPath = path.join(
+              destinationPath,
+              `${base} (${counter++})${ext}`,
+            );
+          }
+
+          try {
+            await fs.promises.rename(oldPath, targetPath);
+          } catch (e: any) {
+            if (e.code === "EXDEV") {
+              await fs.promises.cp(oldPath, targetPath, { recursive: true });
+              await fs.promises.rm(oldPath, { recursive: true, force: true });
+            } else throw e;
+          }
+
+          const finalTitle = path.basename(targetPath, ext);
+          updateItem(id, {
+            path: targetPath,
+            parent_id: finalParentId,
+            title: finalTitle,
+          });
+
+          for (const d of getDescendants(id)) {
+            const rel = path.relative(oldPath, d.path);
+            updateItem(d.id, { path: path.join(targetPath, rel) });
+          }
+
+          results.push({ id, status: "moved", newPath: targetPath });
+          broadcastItemUpdate(id);
+        }
+        return { success: true, results };
+      } catch (e: any) {
         return { success: false, error: e.message };
       }
     },

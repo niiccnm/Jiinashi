@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- New features or functionality
+- **Folder Creation**: Added the ability to create new folders directly within the library view.
+  - **Context-Aware**: Creates the folder as a sub-directory of the currently navigated folder or the selected library root.
+  - **Keyboard Shortcut**: Added `Ctrl+Shift+N` global shortcut for quick folder creation.
+  - **UI**: Added a minimalist "New Folder" icon button in the library header.
+  - **Feedback**: Integrated toast notifications for error handling (e.g., duplicate names, no root selected).
+  - **Files Modified**: `src/lib/views/Library.svelte`, `electron/main.ts`, `electron/preload.ts`.
+
+- **Move Item/Folder**: Added a hierarchical tree-view to move items and folders, accessible via the **Context Menu** and **Bulk Selection Bar**.
+  - Includes **Source Highlighting** and a **Collapse/Restore Toggle**.
+  - **Inline Folder Creation**: Supports creating new folders directly in the tree with automatic expansion and focus.
+  - **Technical Backend**: Implemented recursive directory moves in `main.ts` with cross-drive support (`EXDEV`) and file collision renaming.
+  - **Files Created**: `src/lib/components/MoveToFolderDialog.svelte`.
+  - **Files Modified**: `electron/preload.ts`, `electron/main.ts`, `electron/database/queries/library.ts`, `src/lib/views/Library.svelte`, `src/lib/components/BulkSelection.svelte`.
 
 ### Changed
 

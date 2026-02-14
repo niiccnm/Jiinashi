@@ -89,6 +89,29 @@ export function getItemById(id: number): LibraryItem | undefined {
     .get(id) as LibraryItem | undefined;
 }
 
+export function getAllFolders(): LibraryItem[] {
+  return getDb()
+    .prepare("SELECT * FROM library_items WHERE type = 'folder'")
+    .all() as LibraryItem[];
+}
+
+export function getDescendants(parentId: number): LibraryItem[] {
+  return getDb()
+    .prepare(
+      `
+      WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM library_items WHERE parent_id = ?
+        UNION ALL
+        SELECT li.id
+        FROM library_items li
+        JOIN descendants d ON li.parent_id = d.id
+      )
+      SELECT * FROM library_items WHERE id IN (SELECT id FROM descendants)
+    `,
+    )
+    .all(parentId) as LibraryItem[];
+}
+
 export function getTotalBookCount(rootPath?: string): number {
   let sql =
     "SELECT COUNT(*) as count FROM library_items WHERE type != 'folder'";

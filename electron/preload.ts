@@ -182,6 +182,25 @@ export interface ElectronAPI {
     onCleared: (callback: () => void) => () => void;
     onRefreshed: (callback: () => void) => () => void;
     onTriggerScan: (callback: (folderPath: string) => void) => () => void;
+    createFolder: (
+      parentId: number | null,
+      name: string,
+      rootPath?: string,
+    ) => Promise<{ success: boolean; item?: LibraryItem; error?: string }>;
+    getAllFolders: () => Promise<{
+      success: boolean;
+      folders?: LibraryItem[];
+      roots?: string[];
+      error?: string;
+    }>;
+    moveItems: (
+      itemIds: number[],
+      destinationFolderId: number | null,
+    ) => Promise<{
+      success: boolean;
+      results?: Array<{ id: number; status: string; newPath: string }>;
+      error?: string;
+    }>;
   };
   reader: ReaderAPI;
   window: {
@@ -395,6 +414,11 @@ const api: ElectronAPI = {
       return () =>
         ipcRenderer.removeListener("library:trigger-scan", subscription);
     },
+    createFolder: (parentId: number | null, name: string, rootPath?: string) =>
+      ipcRenderer.invoke("library:createFolder", parentId, name, rootPath),
+    getAllFolders: () => ipcRenderer.invoke("library:getAllFolders"),
+    moveItems: (itemIds: number[], destinationFolderId: number | null) =>
+      ipcRenderer.invoke("library:moveItems", itemIds, destinationFolderId),
   },
   reader: {
     getPage: (path: string, pageIndex: number, includeHidden?: boolean) =>
