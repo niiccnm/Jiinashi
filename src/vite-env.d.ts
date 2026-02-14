@@ -183,6 +183,7 @@ interface Window {
         itemIds: number[],
         contentType: string | null,
       ) => Promise<boolean>;
+      onItemsDeleted: (callback: (ids: number[]) => void) => () => void;
       onItemUpdated: (callback: (item: LibraryItem) => void) => () => void;
       onItemAdded: (callback: (item: LibraryItem) => void) => () => void;
       onScanProgress: (

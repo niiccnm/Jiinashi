@@ -1312,6 +1312,12 @@ function broadcastItemUpdate(id: number) {
   }
 }
 
+function broadcastItemsDeleted(ids: number[]) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("library:items-deleted", ids);
+  }
+}
+
 async function refreshFolderCover(folderId: number): Promise<void> {
   const folder = getItemById(folderId);
   if (!folder || folder.type !== "folder") return;
@@ -1678,6 +1684,7 @@ function registerIpcHandlers() {
     }
 
     deleteItem(id);
+    broadcastItemsDeleted([id]);
     return true;
   });
 
@@ -2872,6 +2879,7 @@ function registerIpcHandlers() {
 
     try {
       await bulkDeleteItems(ids);
+      broadcastItemsDeleted(ids);
     } catch (err) {
       console.error("Database bulk deletion failed:", err);
       throw err;

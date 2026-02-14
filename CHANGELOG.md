@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Path Normalization**: Updated file path handling to resolve hash mismatches on Windows that caused stale covers.
   - **Cache Busting**: Implemented `no-store` headers and versioned URLs to ensure the UI always displays the latest extracted cover image.
   - **Files Modified**: `electron/main.ts`, `electron/coverExtractor.ts`, `src/lib/views/Library.svelte`, `src/lib/views/Favorites.svelte`, `electron/preload.ts`, `src/lib/stores/app.ts`.
+- **Favorites Deletion Sync**: Fixed an issue where items deleted from the Library view would persist in the Favorites view (and vice versa) until the application was restarted.
+  Implemented a bidirectional real-time sync system that instantly updates all views upon deletion.
+  - **Files Modified**: `electron/main.ts`, `electron/preload.ts`, `src/lib/views/Favorites.svelte`, `src/lib/views/Library.svelte`, `src/vite-env.d.ts`.
 
 ### Security
 

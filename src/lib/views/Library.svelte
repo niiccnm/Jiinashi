@@ -341,6 +341,25 @@
       }
     });
 
+    const unsubscribeDeleted = window.electronAPI.library.onItemsDeleted(
+      (ids) => {
+        const deletedSet = new Set(ids);
+        const filterOut = (list: LibraryItem[]) =>
+          list.filter((i) => !deletedSet.has(i.id));
+
+        viewStack = viewStack.map((v) => ({ ...v, items: filterOut(v.items) }));
+        itemsCache.forEach((items, key) => {
+          itemsCache.set(key, filterOut(items));
+        });
+
+        if (searchResults.length > 0) {
+          searchResults = filterOut(searchResults);
+        }
+
+        refreshGlobalCount();
+      },
+    );
+
     const unsubscribeRefreshed = window.electronAPI.library.onRefreshed(() => {
       // Clear cache to force fresh fetch
       itemsCache.clear();
@@ -356,6 +375,7 @@
 
     return () => {
       unsubscribe();
+      unsubscribeDeleted();
       unsubscribeRefreshed();
     };
   });

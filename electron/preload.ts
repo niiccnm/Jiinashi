@@ -175,6 +175,7 @@ export interface ElectronAPI {
       itemIds: number[],
       contentType: string | null,
     ) => Promise<boolean>;
+    onItemsDeleted: (callback: (ids: number[]) => void) => () => void;
     onItemUpdated: (callback: (item: LibraryItem) => void) => () => void;
     onItemAdded: (callback: (item: LibraryItem) => void) => () => void;
     onScanProgress: (
@@ -379,6 +380,12 @@ const api: ElectronAPI = {
     ) => ipcRenderer.invoke("library:bulkSetTags", itemIds, tagIds, action),
     bulkSetContentType: (itemIds: number[], contentType: string | null) =>
       ipcRenderer.invoke("library:bulkSetContentType", itemIds, contentType),
+    onItemsDeleted: (callback: (ids: number[]) => void) => {
+      const subscription = (_: any, ids: number[]) => callback(ids);
+      ipcRenderer.on("library:items-deleted", subscription);
+      return () =>
+        ipcRenderer.removeListener("library:items-deleted", subscription);
+    },
     onItemUpdated: (callback: (item: LibraryItem) => void) => {
       const subscription = (_: any, item: LibraryItem) => callback(item);
       ipcRenderer.on("library:item-updated", subscription);

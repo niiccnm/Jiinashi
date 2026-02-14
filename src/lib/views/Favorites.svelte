@@ -935,6 +935,13 @@
       },
     );
 
+    const unsubscribeDeleted = window.electronAPI.library.onItemsDeleted(
+      (ids) => {
+        const deletedSet = new Set(ids);
+        items = items.filter((i) => !deletedSet.has(i.id));
+      },
+    );
+
     const unsubscribeRefreshed = window.electronAPI.library.onRefreshed(() => {
       loadFavorites(true);
     });
@@ -945,6 +952,7 @@
 
     return () => {
       unsubscribeUpdated();
+      unsubscribeDeleted();
       unsubscribeRefreshed();
       unsubscribeCleared();
     };
