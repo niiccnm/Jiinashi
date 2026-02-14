@@ -461,7 +461,9 @@
     }
   }
 
-  async function handleBulkRefresh(action: "favorite" | "delete" | "tags") {
+  async function handleBulkRefresh(
+    action: "favorite" | "delete" | "tags" | "move",
+  ) {
     if (action === "delete") {
       // Reload favorites to reflect deletions
       await loadFavorites();
@@ -1688,7 +1690,7 @@
           >
             {#if item.cover_path}
               <img
-                src={`media:///${item.cover_path.replace(/\\/g, "/")}`}
+                src={`media:///${item.cover_path.replace(/\\/g, "/")}${item._coverVersion ? `?v=${item._coverVersion}` : ""}`}
                 alt={item.title}
                 draggable="false"
                 loading="eager"
@@ -1847,6 +1849,7 @@
   allIds={stabilizedAllIds}
   view="favorites"
   onRefresh={handleBulkRefresh}
+  onMove={() => {}}
 />
 
 {#if managingArchiveItem}

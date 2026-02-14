@@ -543,7 +543,7 @@ async function createWindow() {
   });
 
   // Custom media:// protocol for local images
-  protocol.handle("media", (request) => {
+  protocol.handle("media", async (request) => {
     let filePath: string;
     try {
       const parsedUrl = new URL(request.url);
@@ -567,7 +567,21 @@ async function createWindow() {
 
     try {
       const url = pathToFileURL(filePath).toString();
-      return net.fetch(url);
+      const response = await net.fetch(url);
+
+      // Disable caching so updated covers reload immediately
+      if (filePath.includes("covers")) {
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: {
+            ...Object.fromEntries(response.headers.entries()),
+            "Cache-Control": "no-store",
+          },
+        });
+      }
+
+      return response;
     } catch (e) {
       console.error("Failed to fetch media:", filePath, e);
       return new Response("Not Found", { status: 404 });
@@ -998,7 +1012,7 @@ async function scanLibraryFolder(
       const file = entry.name;
       const filePath = path.join(dirPath, file);
 
-      // Skip specific files
+      // Skip system/hidden files
       if (
         file.startsWith(".") ||
         file === "Thumbs.db" ||
@@ -1015,10 +1029,7 @@ async function scanLibraryFolder(
           if (ext === ".file" || ext === ".ini" || ext === ".db") continue;
 
           const existingItem = getItemByPath(filePath);
-          if (existingItem) {
-            // Skip items already in DB (avoids redundant cover extraction)
-            continue;
-          }
+          if (existingItem) continue;
 
           if (supportedExtensions.includes(ext)) {
             let pageCount = 0;
@@ -1026,7 +1037,7 @@ async function scanLibraryFolder(
 
             let archiveInfo: any = null;
 
-            // Read sidecar metadata, then delete it
+            // Read sidecar metadata then delete it
             const sidecarPath = path.join(
               path.dirname(filePath),
               path.basename(filePath, path.extname(filePath)) + ".info.json",
@@ -1034,7 +1045,7 @@ async function scanLibraryFolder(
             if (fs.existsSync(sidecarPath)) {
               try {
                 archiveInfo = JSON.parse(fs.readFileSync(sidecarPath, "utf-8"));
-                // Delete after read (user doesn't want it persisted)
+                // Consume and delete
                 fs.unlinkSync(sidecarPath);
                 console.log(
                   `[Scanner] Consumed and removed metadata sidecar: ${sidecarPath}`,
@@ -1042,7 +1053,7 @@ async function scanLibraryFolder(
               } catch (e) {}
             }
 
-            // Read archive contents and internal metadata
+            // Read archive contents and metadata
             if (ext === ".cbz" || ext === ".zip") {
               try {
                 const zip = new StreamZip.async({ file: filePath });
@@ -1067,7 +1078,6 @@ async function scanLibraryFolder(
                 console.error("Failed to read zip archive:", filePath, e);
               }
             } else if (ext === ".rar" || ext === ".cbr") {
-              // RAR/CBR handling via ArchiveHandler (node-unrar-js)
               try {
                 const handler = await ArchiveHandler.open(filePath);
                 const entries = await handler.getEntries();
@@ -1106,12 +1116,11 @@ async function scanLibraryFolder(
               const strict = getSetting("strictImport") !== "false"; // Default to true
               const tagIds: number[] = [];
 
-              // In strict mode, we ONLY use existing tags. We do NOT create new ones.
-              // In lax mode, we create Artist/Parody categories and tags as needed.
+              // In strict mode, only use existing tags; in lax mode, create as needed
               const artistCatId = strict ? null : ensureCategory("Artist");
               const parodyCatId = strict ? null : ensureCategory("Parody");
 
-              // 1. Prioritize Metadata from info.json (inside archive)
+              // 1. Prioritize metadata from archive info.json
               if (archiveInfo) {
                 if (archiveInfo.tags && Array.isArray(archiveInfo.tags)) {
                   for (const t of archiveInfo.tags) {
@@ -1152,7 +1161,7 @@ async function scanLibraryFolder(
                 }
               }
 
-              // 2. Fallback to Download History metadata
+              // 2. Fallback to download history metadata
               const history = getDownloadHistoryByPath(filePath);
 
               if (tagIds.length === 0) {
@@ -1179,7 +1188,7 @@ async function scanLibraryFolder(
                 );
               }
 
-              // 3. Process Content Type (category)
+              // 3. Process content type
               const contentType =
                 archiveInfo?.contentType || history?.content_type;
               console.log(
@@ -1218,7 +1227,6 @@ async function scanLibraryFolder(
             }
             await new Promise((resolve) => setTimeout(resolve, 0));
           } else if (imageExtensions.includes(ext)) {
-            // Individual image is the cover
             addItem({
               path: filePath,
               title: path.basename(file, ext),
@@ -1268,6 +1276,16 @@ async function scanLibraryFolder(
           } else {
             console.log("  -> Folder exists in DB:", existingFolder.id);
             folderId = existingFolder.id;
+
+            // Heal missing folder cover
+            if (!existingFolder.cover_path) {
+              const folderCover = await extractCoverFromFolder(filePath);
+              if (folderCover) {
+                updateItem(folderId, { cover_path: folderCover });
+                console.log(`  -> Folder cover healed for: ${filePath}`);
+                broadcastItemUpdate(folderId);
+              }
+            }
           }
 
           addedCount += await scanLibraryFolder(filePath, folderId, progress);
@@ -1287,9 +1305,26 @@ function broadcastItemUpdate(id: number) {
   // Broadcast item update to all windows
   const updatedItem = getItemById(id);
   if (!updatedItem) return;
+  // Append _coverVersion for browser cache busting
+  const payload = { ...updatedItem, _coverVersion: Date.now() };
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send("library:item-updated", updatedItem);
+    win.webContents.send("library:item-updated", payload);
   }
+}
+
+async function refreshFolderCover(folderId: number): Promise<void> {
+  const folder = getItemById(folderId);
+  if (!folder || folder.type !== "folder") return;
+
+  const hiddenPagesLookup = (filePath: string): string[] => {
+    const normalized = filePath.replace(/\\/g, "/");
+    const item = getItemByPath(normalized);
+    return item ? getHiddenPages(item.id) : [];
+  };
+
+  const newCover = await extractCoverFromFolder(folder.path, hiddenPagesLookup);
+  updateItem(folderId, { cover_path: newCover });
+  broadcastItemUpdate(folderId);
 }
 
 function broadcastItemAdded(id: number) {
@@ -1413,10 +1448,16 @@ function registerIpcHandlers() {
           finalParentId = destinationId;
         } else throw new Error("Target not specified");
 
+        const sourceFolderIds = new Set<number>();
+
         const results = [];
         for (const id of itemIds) {
           const item = getItemById(id);
           if (!item) continue;
+
+          if (item.parent_id !== null) {
+            sourceFolderIds.add(item.parent_id);
+          }
 
           const oldPath = item.path;
           const ext = path.extname(oldPath);
@@ -1455,6 +1496,15 @@ function registerIpcHandlers() {
           results.push({ id, status: "moved", newPath: targetPath });
           broadcastItemUpdate(id);
         }
+
+        // Refresh covers for affected folders
+        if (typeof destinationId === "number") {
+          await refreshFolderCover(destinationId);
+        }
+        for (const sourceId of sourceFolderIds) {
+          await refreshFolderCover(sourceId);
+        }
+
         return { success: true, results };
       } catch (e: any) {
         return { success: false, error: e.message };
@@ -1480,7 +1530,27 @@ function registerIpcHandlers() {
       }
       progress.flush();
 
-      // Notify UI after rescan completes
+      // Refresh covers for items with hidden pages
+      const allHidden = getAllHiddenPages();
+      for (const [itemIdStr, hiddenPages] of Object.entries(allHidden)) {
+        const itemId = Number(itemIdStr);
+        const item = getItemById(itemId);
+        if (!item || item.type === "folder") continue;
+
+        deleteCachedCover(item.path);
+        const newCover = await extractCover(item.path, hiddenPages);
+        if (newCover !== item.cover_path) {
+          updateItem(itemId, { cover_path: newCover });
+          broadcastItemUpdate(itemId);
+        }
+
+        // Update parent folder cover if needed
+        if (item.parent_id !== null) {
+          await refreshFolderCover(item.parent_id);
+        }
+      }
+
+      // Notify UI
       BrowserWindow.getAllWindows().forEach((w) => {
         w.webContents.send("library:refreshed");
       });
@@ -2701,6 +2771,21 @@ function registerIpcHandlers() {
     "reader:setPageVisibility",
     async (_, itemId: number, pageName: string, hidden: boolean) => {
       setPageVisibility(itemId, pageName, hidden);
+
+      // Re-extract cover excluding hidden pages
+      const item = getItemById(itemId);
+      if (item) {
+        deleteCachedCover(item.path);
+        const hiddenPages = getHiddenPages(itemId);
+        const newCover = await extractCover(item.path, hiddenPages);
+        updateItem(itemId, { cover_path: newCover });
+        broadcastItemUpdate(itemId);
+
+        // Refresh parent folder cover if this item is inside one
+        if (item.parent_id !== null) {
+          await refreshFolderCover(item.parent_id);
+        }
+      }
       return true;
     },
   );

@@ -28,7 +28,9 @@ export function initCoverCache(): void {
 
 /** Generate path hash for cover filename */
 function getPathHash(filePath: string): string {
-  return crypto.createHash("md5").update(filePath).digest("hex");
+  // Normalize separators so Windows backslashes and forward slashes produce the same hash
+  const normalized = filePath.replace(/\\/g, "/");
+  return crypto.createHash("md5").update(normalized).digest("hex");
 }
 
 /** Get cached cover path */
@@ -46,6 +48,7 @@ export function isCoverCached(archivePath: string): boolean {
 /** Extract first image from ZIP/CBZ as cover */
 export async function extractCoverFromZip(
   archivePath: string,
+  hiddenPages: string[] = [],
 ): Promise<string | null> {
   try {
     const hash = getPathHash(archivePath);
@@ -54,11 +57,11 @@ export async function extractCoverFromZip(
     const gifPath = path.join(cacheDir, `${hash}.gif`);
     const webpPath = path.join(cacheDir, `${hash}.webp`);
 
-    // 1. Check existing cache
-    if (fs.existsSync(gifPath)) return gifPath;
-    if (fs.existsSync(webpPath)) return webpPath;
-
-    // 2. Check zip for animated formats (healing mode)
+    // Bypass cache when hidden pages change to ensure a visible page is used
+    if (hiddenPages.length === 0) {
+      if (fs.existsSync(gifPath)) return gifPath;
+      if (fs.existsSync(webpPath)) return webpPath;
+    }
 
     const zip = new StreamZip.async({ file: archivePath });
     const entries = await zip.entries();
@@ -67,6 +70,7 @@ export async function extractCoverFromZip(
     const imageEntries = entryList
       .filter((e) => {
         if (e.isDirectory) return false;
+        if (hiddenPages.includes(e.name)) return false;
         return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(e.name);
       })
       .sort((a, b) =>
@@ -77,13 +81,9 @@ export async function extractCoverFromZip(
       );
 
     if (imageEntries.length === 0) {
-      console.warn(`[CoverExtractor] No images found in ZIP: ${archivePath}`);
-      if (entryList.length > 0) {
-        console.warn(
-          `[CoverExtractor] Entries sample:`,
-          entryList.slice(0, 5).map((e) => e.name),
-        );
-      }
+      console.warn(
+        `[CoverExtractor] No visible images found in ZIP: ${archivePath}`,
+      );
       await zip.close();
       return null;
     }
@@ -91,7 +91,7 @@ export async function extractCoverFromZip(
     const firstEntry = imageEntries[0];
     const ext = path.extname(firstEntry.name).toLowerCase();
 
-    // Animated format handling
+    // Preserve animated formats as-is (GIF/WebP)
     if (ext === ".gif" || ext === ".webp") {
       const imageBuffer = await zip.entryData(firstEntry.name);
       await zip.close();
@@ -100,7 +100,7 @@ export async function extractCoverFromZip(
         const finalPath = ext === ".gif" ? gifPath : webpPath;
         fs.writeFileSync(finalPath, imageBuffer);
 
-        // Cleanup stale JPG if it exists
+        // Remove stale JPG if format changed
         if (fs.existsSync(jpgPath)) {
           try {
             fs.unlinkSync(jpgPath);
@@ -110,19 +110,18 @@ export async function extractCoverFromZip(
       }
     }
 
-    // Use cached JPG if not animated
-    if (fs.existsSync(jpgPath)) {
+    // Use cached JPG if not animated and no hidden pages to consider
+    if (hiddenPages.length === 0 && fs.existsSync(jpgPath)) {
       await zip.close();
       return jpgPath;
     }
 
-    // Extract non-animated image
+    // Extract and convert to JPG
     const imageBuffer = await zip.entryData(firstEntry.name);
     await zip.close();
 
     if (!imageBuffer) return null;
 
-    // Convert to JPG
     const image = nativeImage.createFromBuffer(imageBuffer);
 
     if (image.isEmpty()) {
@@ -159,6 +158,7 @@ export async function extractCoverFromZip(
 
 export async function extractCoverFromRar(
   archivePath: string,
+  hiddenPages: string[] = [],
 ): Promise<string | null> {
   try {
     const hash = getPathHash(archivePath);
@@ -167,22 +167,26 @@ export async function extractCoverFromRar(
     const gifPath = path.join(cacheDir, `${hash}.gif`);
     const webpPath = path.join(cacheDir, `${hash}.webp`);
 
-    // 1. Check existing cache
-    if (fs.existsSync(gifPath)) return gifPath;
-    if (fs.existsSync(webpPath)) return webpPath;
-    if (fs.existsSync(jpgPath)) return jpgPath;
+    // Bypass cache when hidden pages change
+    if (hiddenPages.length === 0) {
+      if (fs.existsSync(gifPath)) return gifPath;
+      if (fs.existsSync(webpPath)) return webpPath;
+      if (fs.existsSync(jpgPath)) return jpgPath;
+    }
 
     const handler = await ArchiveHandler.open(archivePath);
     const entries = await handler.getEntries();
 
-    // Filter images
-    const imageEntries = entries.filter((name) =>
-      /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name),
-    );
+    // Filter to visible images
+    const imageEntries = entries.filter((name) => {
+      if (hiddenPages.includes(name)) return false;
+      return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name);
+    });
 
     if (imageEntries.length === 0) {
-      console.warn(`[CoverExtractor] No images found in RAR: ${archivePath}`);
-      console.warn(`[CoverExtractor] Entries sample:`, entries.slice(0, 5));
+      console.warn(
+        `[CoverExtractor] No visible images found in RAR: ${archivePath}`,
+      );
       handler.close();
       return null;
     }
@@ -194,11 +198,11 @@ export async function extractCoverFromRar(
 
     if (!buffer) return null;
 
-    // Animated format handling
+    // Preserve animated formats as-is
     if (ext === ".gif" || ext === ".webp") {
       const finalPath = ext === ".gif" ? gifPath : webpPath;
       fs.writeFileSync(finalPath, buffer);
-      // Cleanup stale JPG if exists
+      // Remove stale JPG if format changed
       if (fs.existsSync(jpgPath)) {
         try {
           fs.unlinkSync(jpgPath);
@@ -207,7 +211,6 @@ export async function extractCoverFromRar(
       return finalPath;
     }
 
-    // Convert to JPG
     const image = nativeImage.createFromBuffer(buffer);
 
     if (image.isEmpty()) {
@@ -245,24 +248,25 @@ export async function extractCoverFromRar(
 /** Extract cover from any supported archive */
 export async function extractCover(
   archivePath: string,
+  hiddenPages: string[] = [],
 ): Promise<string | null> {
   const ext = path.extname(archivePath).toLowerCase();
 
   if (ext === ".cbz" || ext === ".zip") {
-    return extractCoverFromZip(archivePath);
+    return extractCoverFromZip(archivePath, hiddenPages);
   }
 
   if (ext === ".rar" || ext === ".cbr" || ext === ".7z" || ext === ".cb7") {
-    return extractCoverFromRar(archivePath);
+    return extractCoverFromRar(archivePath, hiddenPages);
   }
 
-  // Image files are their own covers
+  // Image files are their own cover
   if (IMAGE_EXTENSIONS.includes(ext)) {
     return archivePath;
   }
 
   if (ext === ".pdf") {
-    // PDF covers require heavy deps, using generic for now but page count is ok
+    // PDF cover extraction not yet implemented
     console.log(
       `[CoverExtractor] PDF cover extraction not yet fully implemented: ${archivePath}`,
     );
@@ -273,9 +277,10 @@ export async function extractCover(
   return null;
 }
 
-/** Get cover for a folder using its first book */
+/** Extract cover from a folder using its first supported file */
 export async function extractCoverFromFolder(
   folderPath: string,
+  hiddenPagesLookup?: (filePath: string) => string[],
 ): Promise<string | null> {
   try {
     const files = fs.readdirSync(folderPath);
@@ -290,12 +295,11 @@ export async function extractCoverFromFolder(
       ...IMAGE_EXTENSIONS,
     ];
 
-    // Sort files naturally
+    // Natural sort
     const sortedFiles = files.sort((a, b) =>
       a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
 
-    // Find first supported file
     for (const file of sortedFiles) {
       const filePath = path.join(folderPath, file);
       const stat = fs.statSync(filePath);
@@ -303,18 +307,21 @@ export async function extractCoverFromFolder(
       if (stat.isFile()) {
         const ext = path.extname(file).toLowerCase();
         if (supportedExtensions.includes(ext)) {
-          return extractCover(filePath);
+          const hiddenPages = hiddenPagesLookup
+            ? hiddenPagesLookup(filePath)
+            : [];
+          return extractCover(filePath, hiddenPages);
         }
       }
     }
 
-    // If no files found, check subdirectories
+    // Recurse into subdirectories
     for (const file of sortedFiles) {
       const filePath = path.join(folderPath, file);
       const stat = fs.statSync(filePath);
 
       if (stat.isDirectory()) {
-        const cover = await extractCoverFromFolder(filePath);
+        const cover = await extractCoverFromFolder(filePath, hiddenPagesLookup);
         if (cover) return cover;
       }
     }

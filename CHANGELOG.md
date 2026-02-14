@@ -25,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Changes in existing functionality
+- **Cover Management Improvements**:
+  - **Dynamic Cover Selection**: Changing page visibility (via "Manage Content") now immediately updates the item's cover to the first visible page.
+  - **Files Modified**: `electron/main.ts`, `electron/coverExtractor.ts`.
 
 ### Deprecated
 
@@ -45,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Files Modified**: `electron/main.ts`, `electron/database/queries/library.ts`.
 - **Item Disappearance**: Fixed a critical bug where items would disappear from the library view when navigating between folders or updating item properties. The issue was due to incorrect cache key parsing in the frontend when using multiple library roots.
   - **Files Modified**: `src/lib/views/Library.svelte`.
+- **Empty Folder Cover Updates**: Fixed an issue where folders created within the app would not generate a cover/thumbnail even after items were moved into them and a library scan was performed.
+  - **Instant Updates**: Moving items into a folder now **immediately** updates its cover without requiring a manual scan.
+  - **Smart Healing**: The scanner now automatically identifies and extracts covers for existing folders that are missing them.
+  - **Path Normalization**: Updated file path handling to resolve hash mismatches on Windows that caused stale covers.
+  - **Cache Busting**: Implemented `no-store` headers and versioned URLs to ensure the UI always displays the latest extracted cover image.
+  - **Files Modified**: `electron/main.ts`, `electron/coverExtractor.ts`, `src/lib/views/Library.svelte`, `src/lib/views/Favorites.svelte`, `electron/preload.ts`, `src/lib/stores/app.ts`.
 
 ### Security
 

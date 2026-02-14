@@ -2741,7 +2741,7 @@
                   {/if}
                   {#if item.cover_path}
                     <img
-                      src={`media:///${item.cover_path.replace(/\\/g, "/")}`}
+                      src={`media:///${item.cover_path.replace(/\\/g, "/")}${item._coverVersion ? `?v=${item._coverVersion}` : ""}`}
                       alt={item.title}
                       draggable="false"
                       loading="eager"

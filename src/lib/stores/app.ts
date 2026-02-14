@@ -26,6 +26,7 @@ export interface LibraryItem {
   tags_list?: string;
   content_type?: string | null;
   types_list?: string;
+  _coverVersion?: number;
 }
 
 interface LibraryState {

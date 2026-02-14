@@ -18,6 +18,7 @@ export interface LibraryItem {
   tags_list?: string;
   types_list?: string;
   content_type?: string | null;
+  _coverVersion?: number;
 }
 
 export interface ScanProgressPayload {
