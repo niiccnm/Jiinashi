@@ -121,39 +121,39 @@
       {/if}
     </button>
 
-    {#if viewMode !== "webtoon"}
-      <div class="my-1 border-t border-gray-800/50 mx-1"></div>
+    <div class="my-1 border-t border-gray-800/50 mx-1"></div>
 
-      <!-- Scale Mode Group -->
-      <div
-        class="px-4 pt-1.5 pb-1 text-[9px] font-bold text-gray-500 uppercase tracking-[0.2em]"
-      >
-        Scale Mode
-      </div>
-      <button
-        onclick={() => update("fitMode", "contain")}
-        class="w-full h-8 px-4 flex items-center justify-between text-[12px] transition-colors hover:bg-white/5 active:bg-white/10 group {fitMode ===
-        'contain'
-          ? 'text-blue-400'
-          : 'text-gray-300'}"
-      >
-        <span>Best Fit</span>
-        {#if fitMode === "contain"}
-          <div class="text-blue-400">{@html checkmark}</div>
-        {/if}
-      </button>
-      <button
-        onclick={() => update("fitMode", "width")}
-        class="w-full h-8 px-4 flex items-center justify-between text-[12px] transition-colors hover:bg-white/5 active:bg-white/10 group {fitMode ===
-        'width'
-          ? 'text-blue-400'
-          : 'text-gray-300'}"
-      >
-        <span>Fit Width</span>
-        {#if fitMode === "width"}
-          <div class="text-blue-400">{@html checkmark}</div>
-        {/if}
-      </button>
+    <!-- Scale Mode Group -->
+    <div
+      class="px-4 pt-1.5 pb-1 text-[9px] font-bold text-gray-500 uppercase tracking-[0.2em]"
+    >
+      Scale Mode
+    </div>
+    <button
+      onclick={() => update("fitMode", "contain")}
+      class="w-full h-8 px-4 flex items-center justify-between text-[12px] transition-colors hover:bg-white/5 active:bg-white/10 group {fitMode ===
+      'contain'
+        ? 'text-blue-400'
+        : 'text-gray-300'}"
+    >
+      <span>Best Fit</span>
+      {#if fitMode === "contain"}
+        <div class="text-blue-400">{@html checkmark}</div>
+      {/if}
+    </button>
+    <button
+      onclick={() => update("fitMode", "width")}
+      class="w-full h-8 px-4 flex items-center justify-between text-[12px] transition-colors hover:bg-white/5 active:bg-white/10 group {fitMode ===
+      'width'
+        ? 'text-blue-400'
+        : 'text-gray-300'}"
+    >
+      <span>Fit Width</span>
+      {#if fitMode === "width"}
+        <div class="text-blue-400">{@html checkmark}</div>
+      {/if}
+    </button>
+    {#if viewMode !== "webtoon"}
       <button
         onclick={() => update("fitMode", "height")}
         class="w-full h-8 px-4 flex items-center justify-between text-[12px] transition-colors hover:bg-white/5 active:bg-white/10 group {fitMode ===
@@ -178,7 +178,9 @@
           <div class="text-blue-400">{@html checkmark}</div>
         {/if}
       </button>
+    {/if}
 
+    {#if viewMode !== "webtoon"}
       <div class="my-1 border-t border-gray-800/50 mx-1"></div>
 
       <!-- Manga Mode -->

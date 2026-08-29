@@ -10,9 +10,9 @@ export default defineConfig({
       name: "html-csp-injection",
       transformIndexHtml(html) {
         const devCSP =
-          "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' media: blob: data: 'unsafe-inline'; connect-src 'self' ws:;";
+          "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' media: blob: data: https: 'unsafe-inline'; connect-src 'self' ws:;";
         const prodCSP =
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' media: blob: data:; connect-src 'self';";
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' media: blob: data: https:; connect-src 'self';";
         const csp = process.env.NODE_ENV === "development" ? devCSP : prodCSP;
         return html.replace(
           "</head>",
@@ -27,7 +27,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ["better-sqlite3", "sharp"],
+              external: ["better-sqlite3", "sharp", "bytenode"],
             },
           },
         },

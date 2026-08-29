@@ -10,6 +10,7 @@
   import DownloadLogs from "./lib/views/DownloadLogs.svelte";
   import ToastNotification from "./lib/components/ToastNotification.svelte";
   import UpdateNotification from "./lib/components/UpdateNotification.svelte";
+  import { toasts } from "./lib/stores/toast";
   import {
     appState,
     openLibrary,
@@ -21,6 +22,7 @@
     navigateHistory,
   } from "./lib/stores/app";
   import type { View } from "./lib/stores/app";
+  import type { ReaderBootstrapOverrides } from "./lib/utils/manga";
 
   let view = $state<View>("library");
   let currentBook = $state<any>(null);
@@ -43,6 +45,31 @@
   const snapFriction = 30;
   let isSnapped = $state(false);
   let initialSnapX = 0;
+
+  function parseReaderInitOverrides(
+    params: URLSearchParams,
+  ): ReaderBootstrapOverrides | null {
+    const initialViewMode = params.get("initialViewMode");
+    const initialMangaMode = params.get("initialMangaMode");
+
+    const overrides: ReaderBootstrapOverrides = {};
+
+    if (
+      initialViewMode === "single" ||
+      initialViewMode === "double" ||
+      initialViewMode === "webtoon"
+    ) {
+      overrides.initialViewMode = initialViewMode;
+    }
+
+    if (initialMangaMode === "true") {
+      overrides.initialMangaMode = true;
+    } else if (initialMangaMode === "false") {
+      overrides.initialMangaMode = false;
+    }
+
+    return Object.keys(overrides).length > 0 ? overrides : null;
+  }
 
   $effect(() => {
     // Check for query params (Reader Window Mode)
@@ -69,6 +96,11 @@
           const pageParam = params.get("page");
           if (pageParam) {
             book.current_page = parseInt(pageParam);
+            book.current_page_offset = 0;
+          }
+          const readerInit = parseReaderInitOverrides(params);
+          if (readerInit) {
+            book.readerInit = readerInit;
           }
           appState.update((s) => ({
             ...s,
@@ -98,6 +130,10 @@
 
         // Show sequence for auxiliary windows to prevent flash
         const isAuxiliary = !!viewParam;
+        if (viewParam === "reader") {
+          isInitialLoad = false;
+          return;
+        }
 
         // Show window during dark loading state to prevent native white flash (v10)
         setTimeout(
@@ -131,6 +167,11 @@
       view = state.currentView;
       currentBook = state.currentBook;
     });
+    const unsubscribeAppToast = window.electronAPI.notifications.onToast(
+      (message, type) => {
+        toasts.add(message, type);
+      },
+    );
 
     const handleMouseDown = (e: MouseEvent) => {
       // If in reader mode, let the Reader component handle navigation
@@ -204,9 +245,9 @@
         });
       },
     );
-
     return () => {
       unsubscribe();
+      unsubscribeAppToast();
       window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
@@ -231,7 +272,9 @@
 <div
   class="h-screen w-screen flex bg-gray-950 text-gray-100 font-sans overflow-hidden {isInitialLoad
     ? 'no-animations opacity-0'
-    : 'opacity-100 transition-opacity duration-300'} {isResizing
+    : view === 'reader'
+      ? 'opacity-100'
+      : 'opacity-100 transition-opacity duration-300'} {isResizing
     ? 'is-resizing'
     : ''}"
 >

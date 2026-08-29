@@ -17,12 +17,15 @@ export interface LibraryItem {
   is_favorite: boolean;
   reading_status: "unread" | "reading" | "read";
   current_page: number;
+  current_page_offset?: number;
   last_read_at: string | null;
   added_at: string;
   tags_list?: string;
   types_list?: string;
   content_type?: string | null;
   miss_count?: number;
+  manga_series_id?: number | null;
+  manga_preference?: "auto" | "force_manga" | "force_non_manga";
 }
 
 export interface SearchResult extends LibraryItem {
@@ -77,9 +80,11 @@ export function initDatabase(): Database.Database {
       is_favorite INTEGER DEFAULT 0,
       reading_status TEXT DEFAULT 'unread',
       current_page INTEGER DEFAULT 0,
+      current_page_offset REAL DEFAULT 0,
       last_read_at TEXT,
       added_at TEXT DEFAULT CURRENT_TIMESTAMP,
       content_type TEXT,
+      manga_preference TEXT DEFAULT 'auto',
       FOREIGN KEY (parent_id) REFERENCES library_items(id)
     );
     
@@ -173,7 +178,8 @@ export function initDatabase(): Database.Database {
       total_images INTEGER,
       downloaded_images INTEGER,
       progress_percent REAL,
-      hidden_from_queue INTEGER DEFAULT 0
+      hidden_from_queue INTEGER DEFAULT 0,
+      hidden_from_manga_queue INTEGER DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_library_path ON library_items(path);
@@ -187,6 +193,97 @@ export function initDatabase(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_type_aliases_alias ON type_aliases(alias);
     CREATE INDEX IF NOT EXISTS idx_download_history_url ON download_history(url);
     CREATE INDEX IF NOT EXISTS idx_download_history_added_at ON download_history(added_at);
+
+    -- Manga series metadata (offline-available)
+    CREATE TABLE IF NOT EXISTS manga_series (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id TEXT NOT NULL,           -- extension source identifier
+      source_url TEXT NOT NULL,          -- URL on the source site
+      anilist_id INTEGER,                -- AniList manga ID (stable identity)
+      mal_id INTEGER,                    -- MyAnimeList manga ID
+      mangabaka_id INTEGER,              -- Mangabaka series ID
+      title_original TEXT,               -- Original (JP/KR/CN) title
+      title_romaji TEXT,                 -- Romanized title
+      title_english TEXT,                -- English title
+      description TEXT,
+      cover_url TEXT,                    -- Remote cover URL (sourced from AniList)
+      banner_url TEXT,                   -- Remote banner URL (sourced from AniList)
+      cover_local_path TEXT,             -- Cached cover on disk
+      author TEXT,
+      artist TEXT,
+      status TEXT,                       -- ongoing, completed, hiatus, cancelled
+      reading_format TEXT DEFAULT 'manga', -- 'manga' (RTL) | 'manhwa'/'manhua' (vertical scroll)
+      mal_score REAL,                    -- MAL score (sourced from MAL API)
+      year INTEGER,                      -- Publication start year (AniList)
+      genres TEXT,                       -- JSON array (genres)
+      last_updated TEXT,
+      added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(source_id, source_url)
+    );
+
+    -- Individual chapters/volumes within a series
+    CREATE TABLE IF NOT EXISTS manga_chapters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      series_id INTEGER NOT NULL,
+      chapter_number REAL,               -- 1, 1.5, 2, etc.
+      volume_number INTEGER,             -- optional volume grouping
+      title TEXT,
+      source_url TEXT NOT NULL,
+      scanlator TEXT,
+      date_uploaded TEXT,
+      is_downloaded INTEGER DEFAULT 0,
+      download_path TEXT,                -- local path when downloaded
+      is_read INTEGER DEFAULT 0,
+      current_page INTEGER DEFAULT 0,
+      page_count INTEGER DEFAULT 0,
+      last_read_at TEXT,
+      FOREIGN KEY (series_id) REFERENCES manga_series(id) ON DELETE CASCADE
+    );
+
+    -- Installed extensions
+    CREATE TABLE IF NOT EXISTS manga_extensions (
+      id TEXT PRIMARY KEY,               -- unique extension ID
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      icon_url TEXT,
+      is_enabled INTEGER DEFAULT 1,
+      installed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      config TEXT                        -- JSON config/settings
+    );
+
+    -- Tracking service accounts (MAL, AniList)
+    CREATE TABLE IF NOT EXISTS tracking_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service TEXT NOT NULL,              -- 'mal' | 'anilist'
+      username TEXT,
+      access_token TEXT,                  -- encrypted
+      refresh_token TEXT,                 -- encrypted
+      token_expires_at TEXT,
+      is_active INTEGER DEFAULT 1,
+      UNIQUE(service)
+    );
+
+    -- Tracking entries (link series to tracker)
+    CREATE TABLE IF NOT EXISTS tracking_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      series_id INTEGER NOT NULL,
+      service TEXT NOT NULL,              -- 'mal' | 'anilist'
+      remote_id TEXT NOT NULL,            -- MAL/AniList manga ID
+      status TEXT,                        -- reading, completed, plan_to_read, etc.
+      chapters_read INTEGER DEFAULT 0,
+      total_chapters INTEGER,             -- Total chapters from tracker API when available
+      volumes_read INTEGER DEFAULT 0,
+      total_volumes INTEGER,              -- Total volumes from tracker API when available
+      score REAL,                        -- User's personal score (editable in UI)
+      last_synced_at TEXT,
+      FOREIGN KEY (series_id) REFERENCES manga_series(id) ON DELETE CASCADE,
+      UNIQUE(series_id, service)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_manga_chapters_series ON manga_chapters(series_id);
+    CREATE INDEX IF NOT EXISTS idx_tracking_entries_series ON tracking_entries(series_id);
+    CREATE INDEX IF NOT EXISTS idx_manga_series_source ON manga_series(source_id);
   `);
 
   // Add sort_order column to alias tables if they don't exist
@@ -210,6 +307,81 @@ export function initDatabase(): Database.Database {
       "ALTER TABLE library_items ADD COLUMN miss_count INTEGER DEFAULT 0",
     );
   } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE library_items ADD COLUMN manga_series_id INTEGER",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE library_items ADD COLUMN manga_preference TEXT DEFAULT 'auto'",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE library_items ADD COLUMN current_page_offset REAL DEFAULT 0",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE download_history ADD COLUMN hidden_from_manga_queue INTEGER DEFAULT 0",
+    );
+  } catch (e) {}
+  try {
+    const migrationKey = "migration:manga_queue_visibility_v1";
+    const hasMigration = database
+      .prepare("SELECT value FROM settings WHERE key = ?")
+      .get(migrationKey) as { value?: string } | undefined;
+    if (!hasMigration?.value) {
+      database
+        .prepare(
+          "UPDATE download_history SET hidden_from_manga_queue = 1 WHERE content_type = 'manga'",
+        )
+        .run();
+      database
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .run(migrationKey, "1");
+    }
+  } catch (e) {}
+  try {
+    database.exec("ALTER TABLE manga_series ADD COLUMN anilist_id INTEGER");
+  } catch (e) {}
+  try {
+    database.exec("ALTER TABLE manga_series ADD COLUMN mal_id INTEGER");
+  } catch (e) {}
+  try {
+    database.exec("ALTER TABLE manga_series ADD COLUMN mangabaka_id INTEGER");
+  } catch (e) {}
+  try {
+    database.exec("ALTER TABLE manga_series ADD COLUMN year INTEGER");
+  } catch (e) {}
+  try {
+    database.exec("ALTER TABLE manga_series ADD COLUMN banner_url TEXT");
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE tracking_entries ADD COLUMN total_chapters INTEGER",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE tracking_entries ADD COLUMN volumes_read INTEGER DEFAULT 0",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "ALTER TABLE tracking_entries ADD COLUMN total_volumes INTEGER",
+    );
+  } catch (e) {}
+  try {
+    database.exec(
+      "CREATE INDEX IF NOT EXISTS idx_manga_series_mangabaka_id ON manga_series(mangabaka_id)",
+    );
+    database.exec("DROP INDEX IF EXISTS idx_manga_series_mangabaka_id_unique");
+    database.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_manga_series_mangabaka_id_unique ON manga_series(mangabaka_id) WHERE mangabaka_id IS NOT NULL AND LOWER(source_id) IN ('anilist', 'mal', 'mangabaka')",
+    );
+  } catch (e) {}
 
   try {
     database
@@ -220,6 +392,18 @@ export function initDatabase(): Database.Database {
       WHERE type IS NULL 
          OR type = '' 
          OR type NOT IN ('book', 'folder')
+    `,
+      )
+      .run();
+
+    database
+      .prepare(
+        `
+      UPDATE library_items
+      SET manga_preference = 'auto'
+      WHERE manga_preference IS NULL
+         OR manga_preference = ''
+         OR manga_preference NOT IN ('auto', 'force_manga', 'force_non_manga')
     `,
       )
       .run();
@@ -373,9 +557,16 @@ export function setSetting(key: string, value: string) {
     .run(key, value);
 }
 
+export function deleteSetting(key: string): boolean {
+  const result = getDb().prepare("DELETE FROM settings WHERE key = ?").run(key);
+  return result.changes > 0;
+}
+
 export function getAllSettings(): Record<string, string> {
   const rows = getDb()
-    .prepare("SELECT key, value FROM settings")
+    .prepare(
+      "SELECT key, value FROM settings WHERE key NOT LIKE 'tracking:%:customClientId'",
+    )
     .all() as Settings[];
   return Object.fromEntries(rows.map((r) => [r.key, r.value]));
 }

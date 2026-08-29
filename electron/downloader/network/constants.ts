@@ -1,5 +1,7 @@
+export const CHROME_VERSION = process.versions.chrome || "150.0.7871.224";
+export const CHROME_MAJOR_VERSION = CHROME_VERSION.split(".")[0];
 export const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`;
 
 /**
  * Spoofs all Client Hints to match the User-Agent perfectly.
@@ -7,7 +9,7 @@ export const USER_AGENT =
  */
 export const CLIENT_HINTS = {
   "Sec-CH-UA":
-    '"Google Chrome";v="134", "Chromium";v="134", "Not:A-Brand";v="24"',
+    `"Google Chrome";v="${CHROME_MAJOR_VERSION}", "Chromium";v="${CHROME_MAJOR_VERSION}", "Not:A-Brand";v="24"`,
   "Sec-CH-UA-Mobile": "?0",
   "Sec-CH-UA-Platform": '"Windows"',
   "Sec-CH-UA-Platform-Version": '"10.0.0"',
@@ -15,7 +17,7 @@ export const CLIENT_HINTS = {
   "Sec-CH-UA-Bitness": '"64"',
   "Sec-CH-UA-Model": '""',
   "Sec-CH-UA-Full-Version-List":
-    '"Google Chrome";v="134.0.6998.205", "Chromium";v="134.0.6998.205", "Not:A-Brand";v="24.0.0.0"',
+    `"Google Chrome";v="${CHROME_VERSION}", "Chromium";v="${CHROME_VERSION}", "Not:A-Brand";v="24.0.0.0"`,
 };
 
 export const FALLBACK_IPS: Record<string, string> = {

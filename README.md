@@ -60,10 +60,9 @@ A built-in, high-performance download manager for seamless content acquisition.
 
 ## 🚀 Future Roadmap
 
-~~- **Built-in Downloader**: Ability to download content directly within the application. (High Priority)~~
-
-- **Tracker Integration**: Support for **MAL** (MyAnimeList) and **AniList** to track your reading progress. (High Priority)
-- **Account Integration**: Import cookies or login to services (e.g., E-Hentai, ExHentai) to download content using your account, similar to Hitomi Downloader.
+- ~~**Built-in Downloader**: Ability to download content directly within the application. (High Priority)~~
+- ~~**Tracker Integration**: Connect **MAL** (MyAnimeList) and **AniList** accounts to track and update reading progress. (High Priority)~~
+- ~~**Account Integration**: Log in to **E-Hentai / ExHentai** from Settings and reuse the account session when downloading restricted content.~~
 - **Light Novel Support**: Support for managing and reading Light Novels with native **EPUB** support and dedicated settings.
 - **Japanese Language Learning**: Integrate **manga-ocr** and **mokuro** to generate selectable text overlays in the reader. This will enable **Yomitan** dictionary lookups and direct word exporting to **Anki**.
 - **Multi-language Support**: Localize the application into **Japanese**, **Korean**, **Chinese**, and **Spanish**.

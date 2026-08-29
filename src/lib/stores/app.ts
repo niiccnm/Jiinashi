@@ -1,7 +1,9 @@
 import { writable } from "svelte/store";
+import type { MangaPreference, ReaderBootstrapOverrides } from "../utils/manga";
 
 export type View =
   | "library"
+  | "manga"
   | "reader"
   | "favorites"
   | "recent"
@@ -21,13 +23,35 @@ export interface LibraryItem {
   is_favorite: boolean;
   reading_status: "unread" | "reading" | "read";
   current_page: number;
+  current_page_offset?: number;
   last_read_at: string | null;
   added_at: string;
   tags_list?: string;
   content_type?: string | null;
   types_list?: string;
   _coverVersion?: number;
+  manga_series_id?: number | null;
+  manga_preference?: MangaPreference;
+  readerInit?: ReaderBootstrapOverrides | null;
 }
+
+export type DownloaderMangaDeepLink = {
+  id?: number | null;
+  sourceId?: string;
+  sourceUrl?: string;
+  title?: {
+    romaji?: string;
+    english?: string;
+    native?: string;
+  };
+  displayTitle?: string;
+};
+
+export type DownloaderNavigationIntent = {
+  requestId: number;
+  mode: "queue" | "history" | "manga" | "doujinshi";
+  manga?: DownloaderMangaDeepLink | null;
+};
 
 interface LibraryState {
   currentFolderId: number | null;
@@ -40,7 +64,10 @@ interface AppState {
   currentBook: LibraryItem | null;
   libraryState: LibraryState;
   sidebarWidth: number;
+  downloaderNavigation: DownloaderNavigationIntent | null;
 }
+
+let downloaderNavigationRequestId = 0;
 
 export const appState = writable<AppState>({
   currentView: "library",
@@ -51,17 +78,30 @@ export const appState = writable<AppState>({
     scrollPositions: {},
   },
   sidebarWidth: 256,
+  downloaderNavigation: null,
 });
 
 export function openBook(item: LibraryItem) {
   // Open in new window
-  window.electronAPI.reader.openWindow(item.id);
+  window.electronAPI.reader.openWindow(
+    item.id,
+    undefined,
+    item.manga_series_id ?? null,
+  );
 }
 
 export function openLibrary() {
   appState.update((s) => ({
     ...s,
     currentView: "library",
+    currentBook: null,
+  }));
+}
+
+export function openManga() {
+  appState.update((s) => ({
+    ...s,
+    currentView: "manga",
     currentBook: null,
   }));
 }
@@ -98,12 +138,47 @@ export function openTags() {
   }));
 }
 
-export function openDownloader() {
+export function openDownloader(
+  navigation?: Omit<DownloaderNavigationIntent, "requestId"> | null,
+) {
+  const nextNavigation =
+    navigation && typeof navigation === "object"
+      ? ({
+          ...navigation,
+          requestId: ++downloaderNavigationRequestId,
+        } as DownloaderNavigationIntent)
+      : null;
   appState.update((s) => ({
     ...s,
     currentView: "downloader",
     currentBook: null,
+    downloaderNavigation: nextNavigation,
   }));
+}
+
+export function openDownloaderToMangaSeries(
+  manga: DownloaderMangaDeepLink,
+) {
+  openDownloader({
+    mode: "manga",
+    manga: manga || null,
+  });
+}
+
+export function clearDownloaderNavigation(requestId?: number) {
+  appState.update((s) => {
+    if (!s.downloaderNavigation) return s;
+    if (
+      Number(requestId || 0) > 0 &&
+      Number(s.downloaderNavigation.requestId || 0) !== Number(requestId)
+    ) {
+      return s;
+    }
+    return {
+      ...s,
+      downloaderNavigation: null,
+    };
+  });
 }
 
 export function updateLibraryState(state: Partial<LibraryState>) {
@@ -210,20 +285,23 @@ export function navigateHistory(direction: number) {
 }
 
 /**
- * Attempts to navigate back to a specific state if it matches the previous history entry.
- * This prevents creating duplicate history entries when checking "Back" in the UI.
+ * Returns to the nearest earlier visit to the requested state.
+ * UI Back collapses skipped visits so Forward restores the view being left.
  */
 export function tryNavigateBackTo(target: {
   view: View;
   folderId: number | null;
 }): boolean {
-  const prevEntry = historyStack[historyIndex - 1];
-  if (prevEntry) {
-    // Check if previous entry matches target
+  for (let index = historyIndex - 1; index >= 0; index--) {
+    const entry = historyStack[index];
     if (
-      prevEntry.view === target.view &&
-      prevEntry.folderId === target.folderId
+      entry.view === target.view &&
+      entry.folderId === target.folderId
     ) {
+      // Keep the current view and its forward history, but don't replay the detour.
+      const skippedEntries = historyIndex - index - 1;
+      historyStack.splice(index + 1, skippedEntries);
+      historyIndex -= skippedEntries;
       navigateHistory(-1);
       return true;
     }

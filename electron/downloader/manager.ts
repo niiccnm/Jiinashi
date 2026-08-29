@@ -1,9 +1,10 @@
 import { BrowserWindow, app, nativeImage } from "electron";
+import fs from "fs";
 import path from "path";
 import { getParser } from "./parsers";
 import { fetchWithHiddenWindow } from "./network";
 import * as db from "../database/database";
-import { DownloadTask } from "./types";
+import type { DownloadTask } from "./types";
 import { Fetcher } from "./fetcher";
 import { QueueManager } from "./queue";
 import { FileSystemManager } from "./filesystem";
@@ -20,6 +21,7 @@ export class DownloaderManager {
   private lastNotifyAt = 0;
 
   private lastPreviewAtByTask = new Map<number, number>();
+  private activeTaskPromises = new Map<number, Promise<void>>();
   private speedByTaskId = new Map<
     number,
     { lastAt: number; lastBytes: number }
@@ -28,6 +30,7 @@ export class DownloaderManager {
   constructor(mainWindow: BrowserWindow | null) {
     this.mainWindow = mainWindow;
     this.loadSettings();
+    this.enforceHistoryLimit();
     registerDownloaderIpc(this);
     // Restore incomplete tasks from database
     this.queue.restoreFromDatabase();
@@ -52,6 +55,16 @@ export class DownloaderManager {
     if (delay) {
       this.queue.setDelay(parseInt(delay));
     }
+  }
+
+  private resolveMaxHistoryItems() {
+    const parsed = Number.parseInt(String(db.getSetting("maxHistoryItems") || "50"), 10);
+    if (!Number.isFinite(parsed)) return 50;
+    return Math.min(500, Math.max(10, parsed));
+  }
+
+  private enforceHistoryLimit() {
+    db.pruneTerminalDownloadHistory(this.resolveMaxHistoryItems());
   }
 
   // --- Public Manager API (Delegates & Orchestration) ---
@@ -141,7 +154,7 @@ export class DownloaderManager {
     return { success: true, id };
   }
 
-  cancelDownload(id: number) {
+  cancelDownload(id: number, processNext = true) {
     this.queue.removeActive(id);
     const task = this.queue.findTask(id);
     if (task) {
@@ -156,12 +169,15 @@ export class DownloaderManager {
       if (task.logs && task.logs.length > 0) {
         db.saveDownloadLogs(task.id, task.logs);
       }
+      this.enforceHistoryLimit();
 
       const tempDir = path.join(app.getPath("temp"), `jiinashi_${task.id}`);
       this.filesystem.cleanup(tempDir);
 
       this.notifyUpdate(true);
-      this.processQueue();
+      if (processNext) {
+        this.processQueue();
+      }
     }
   }
 
@@ -176,6 +192,28 @@ export class DownloaderManager {
         this.cancelDownload(t.id);
       }
     });
+  }
+
+  async cancelDownloadsForPath(targetPath: string) {
+    const matchingTasks = this.queue.getQueue().filter((task) => {
+      if (["completed", "failed", "cancelled"].includes(task.status)) {
+        return false;
+      }
+      const outputPath = task.outputPath || this.filesystem.getOutputPath(task);
+      return utils.isPathInside(outputPath, targetPath);
+    });
+
+    for (const task of matchingTasks) {
+      this.cancelDownload(task.id, false);
+    }
+
+    const activePromises = matchingTasks
+      .map((task) => this.activeTaskPromises.get(task.id))
+      .filter((promise): promise is Promise<void> => Boolean(promise));
+    await Promise.allSettled(activePromises);
+    if (matchingTasks.length > 0) {
+      this.processQueue();
+    }
   }
 
   retryAll() {
@@ -291,8 +329,11 @@ export class DownloaderManager {
         task.url,
         undefined,
         undefined,
-        () => !this.queue.findTask(task.id),
+        () =>
+          !this.queue.findTask(task.id) || task.status === "cancelled",
       );
+
+      if (task.status === "cancelled") return;
 
       const title = meta.title?.trim() || task.title;
       const outPath = this.filesystem.getOutputPath({ ...task, title } as any);
@@ -360,9 +401,14 @@ export class DownloaderManager {
     if (this.queue.canStartNewDownload()) {
       const task = this.queue.getNextPendingTask();
       if (task) {
-        this.runDownload(task).catch((err) => {
-          console.error(`Failed to start download ${task.id}:`, err);
-        });
+        const activePromise = this.runDownload(task)
+          .catch((err) => {
+            console.error(`Failed to start download ${task.id}:`, err);
+          })
+          .finally(() => {
+            this.activeTaskPromises.delete(task.id);
+          });
+        this.activeTaskPromises.set(task.id, activePromise);
 
         const delay = this.queue.getDelay();
         if (delay > 0) {
@@ -748,6 +794,10 @@ export class DownloaderManager {
     this.filesystem.ensureDir(path.dirname(outPath));
 
     await this.filesystem.createCBZ(tempDir, outPath);
+    if (!this.queue.isActive(task.id)) {
+      await fs.promises.rm(outPath, { force: true });
+      throw new Error("Cancelled by user");
+    }
     this.filesystem.cleanup(tempDir);
 
     task.status = "completed";
@@ -770,6 +820,7 @@ export class DownloaderManager {
     if (task.logs && task.logs.length > 0) {
       db.saveDownloadLogs(task.id, task.logs);
     }
+    this.enforceHistoryLimit();
 
     // Auto-import
     this.autoImport(
@@ -993,6 +1044,7 @@ export class DownloaderManager {
     if (task.logs && task.logs.length > 0) {
       db.saveDownloadLogs(task.id, task.logs);
     }
+    this.enforceHistoryLimit();
     this.notifyUpdate(true);
   }
 

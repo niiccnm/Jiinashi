@@ -1,24 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { fade } from "svelte/transition";
   import { openBook } from "../stores/app";
+  import type { LibraryItem } from "../stores/app";
   import { dragScroll } from "../utils/dragScroll";
   import Dialog from "../components/Dialog.svelte";
-
-  interface LibraryItem {
-    id: number;
-    path: string;
-    title: string;
-    type: "book" | "folder";
-    page_count: number;
-    cover_path: string | null;
-    parent_id: number | null;
-    is_favorite: boolean;
-    reading_status: "unread" | "reading" | "read";
-    current_page: number;
-    last_read_at: string | null;
-    added_at: string;
-    types_list?: string;
-  }
+  import ArchiveManager from "../components/ArchiveManager.svelte";
+  import MoveToFolderDialog from "../components/MoveToFolderDialog.svelte";
+  import LibraryMetadataDialogs from "../components/Library/LibraryMetadataDialogs.svelte";
+  import { toasts } from "../stores/toast";
 
   let items = $state<LibraryItem[]>([]);
   let loading = $state(true);
@@ -28,6 +18,79 @@
   let blurR18 = $state(false);
   let blurR18Hover = $state(false);
   let blurR18Intensity = $state(12);
+  let activeMenuId = $state<number | null>(null);
+  let managingArchiveItem = $state<LibraryItem | null>(null);
+  let moveItem = $state<LibraryItem | null>(null);
+
+  let pendingDeleteItem = $state<LibraryItem | null>(null);
+  let deleteDialogLoading = $state(false);
+  let renameItem = $state<LibraryItem | null>(null);
+  let renameValue = $state("");
+  let renameLoading = $state(false);
+  let renameError = $state("");
+
+  let tagEditorItem = $state<LibraryItem | null>(null);
+  let typeEditorItem = $state<LibraryItem | null>(null);
+
+  type MenuActionKey =
+    | "tags"
+    | "type"
+    | "content"
+    | "move"
+    | "rename"
+    | "location"
+    | "delete";
+
+  type MenuAction = {
+    key: MenuActionKey;
+    label: string;
+    icon: string;
+    danger?: boolean;
+  };
+
+  const MENU_ICONS = {
+    tags: "M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z",
+    type: "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10",
+    move: "M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4",
+    rename: "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z",
+    location: "M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z",
+    delete: "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16",
+  };
+
+  const MENU_ACTIONS = [
+    { key: "tags", label: "Edit Tags", icon: MENU_ICONS.tags },
+    { key: "type", label: "Set Type", icon: MENU_ICONS.type },
+    { key: "content", label: "Manage Content", icon: MENU_ICONS.type },
+    { key: "move", label: "Move Item", icon: MENU_ICONS.move },
+    { key: "rename", label: "Rename", icon: MENU_ICONS.rename },
+    { key: "location", label: "Open Location", icon: MENU_ICONS.location },
+    { key: "delete", label: "Delete", icon: MENU_ICONS.delete, danger: true },
+  ] satisfies MenuAction[];
+
+  function runMenuAction(key: MenuActionKey, item: LibraryItem) {
+    switch (key) {
+      case "tags":
+        tagEditorItem = item;
+        return;
+      case "type":
+        typeEditorItem = item;
+        return;
+      case "content":
+        managingArchiveItem = item;
+        return;
+      case "move":
+        moveItem = item;
+        return;
+      case "rename":
+        openRenameDialog(item);
+        return;
+      case "location":
+        void window.electronAPI.library.showInFolder(item.path);
+        return;
+      case "delete":
+        pendingDeleteItem = item;
+    }
+  }
 
   async function refreshSettings() {
     try {
@@ -68,6 +131,78 @@
       closeRemoveDialog();
     } catch (e) {
       console.error("Failed to remove from recent:", e);
+    }
+  }
+
+  function toggleMenu(id: number, event: MouseEvent) {
+    event.stopPropagation();
+    activeMenuId = activeMenuId === id ? null : id;
+  }
+
+  function closeMenu() {
+    activeMenuId = null;
+  }
+
+  function openRenameDialog(item: LibraryItem) {
+    renameItem = item;
+    renameValue = item.title;
+    renameError = "";
+  }
+
+  async function handleRename() {
+    if (!renameItem || !renameValue.trim() || renameLoading) return;
+    renameLoading = true;
+    renameError = "";
+
+    try {
+      const result = await window.electronAPI.library.renameItem(
+        renameItem.id,
+        renameValue.trim(),
+      );
+      if (!result.success) {
+        renameError = result.error || "Failed to rename";
+        return;
+      }
+
+      renameItem = null;
+    } catch (error: any) {
+      renameError = error?.message || "Failed to rename";
+    } finally {
+      renameLoading = false;
+    }
+  }
+
+  async function refreshItem(id: number | undefined) {
+    if (!id) return;
+    try {
+      const updatedItem = await window.electronAPI.library.getItem(id);
+      if (updatedItem) {
+        items = items.map((item) =>
+          item.id === updatedItem.id ? { ...item, ...updatedItem } : item,
+        );
+      }
+    } catch (error) {
+      console.error("Failed to refresh recent item metadata:", error);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!pendingDeleteItem) return;
+    const itemToDelete = pendingDeleteItem;
+    deleteDialogLoading = true;
+    try {
+      await window.electronAPI.library.deleteItem(itemToDelete.id);
+      items = items.filter((item) => item.id !== itemToDelete.id);
+      pendingDeleteItem = null;
+    } catch (error) {
+      console.error("Failed to delete recent item:", error);
+      toasts.add(
+        "The item could not be moved to the Recycle Bin.",
+        "error",
+        6000,
+      );
+    } finally {
+      deleteDialogLoading = false;
     }
   }
 
@@ -139,13 +274,16 @@
       async (payload) => {
         const existingIndex = items.findIndex((i) => i.id === payload.id);
         if (existingIndex !== -1) {
+          const timestampChanged =
+            Boolean(payload.last_read_at) &&
+            payload.last_read_at !== items[existingIndex].last_read_at;
           const updated = {
             ...items[existingIndex],
             current_page: payload.current_page,
             last_read_at:
               payload.last_read_at ?? items[existingIndex].last_read_at,
           };
-          if (payload.last_read_at) {
+          if (timestampChanged) {
             items = [
               updated,
               ...items.slice(0, existingIndex),
@@ -194,6 +332,8 @@
   });
 </script>
 
+<svelte:window onclick={closeMenu} />
+
 <header
   class="h-16 bg-slate-900/80 border-b border-slate-700/50 flex items-center px-6"
 >
@@ -217,7 +357,11 @@
   >
 </header>
 
-<div class="flex-1 overflow-auto p-6" use:dragScroll={{ axis: "y" }}>
+<div
+  class="flex-1 overflow-auto p-6"
+  use:dragScroll={{ axis: "y" }}
+  onscroll={closeMenu}
+>
   {#if loading}
     <div class="flex items-center justify-center h-full">
       <div
@@ -255,9 +399,86 @@
           role="button"
           tabindex="0"
           class="w-full flex items-center gap-4 p-4 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 hover:border-blue-500/50 rounded-xl transition-all duration-200 text-left group relative cursor-pointer"
+          style="z-index: {activeMenuId === item.id ? 50 : 'auto'}"
           ondblclick={() => openBook(item)}
           onkeydown={(e) => e.key === "Enter" && openBook(item)}
         >
+          <div
+            class="absolute top-2 right-2 {activeMenuId === item.id
+              ? 'z-[70]'
+              : 'z-20'}"
+          >
+            <button
+              aria-label={`Options for ${item.title}`}
+              title="Options"
+              class="p-1.5 rounded-full transition-all duration-200 {activeMenuId ===
+              item.id
+                ? 'bg-black/60 text-white opacity-100'
+                : 'bg-black/40 text-slate-400 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-white hover:bg-black/60'}"
+              onclick={(event) => toggleMenu(item.id, event)}
+              onkeydown={(event) => event.stopPropagation()}
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
+                />
+              </svg>
+            </button>
+
+            {#if activeMenuId === item.id}
+              <div
+                class="absolute right-0 top-full mt-1 w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden text-left"
+                role="menu"
+                tabindex="-1"
+                onclick={(event) => event.stopPropagation()}
+                onkeydown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === "Escape") closeMenu();
+                }}
+                transition:fade={{ duration: 100 }}
+              >
+                <div class="p-1">
+                  {#each MENU_ACTIONS as action (action.key)}
+                    {#if action.key !== "content" || item.type === "book"}
+                      <button
+                        class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
+                        onclick={() => {
+                          closeMenu();
+                          runMenuAction(action.key, item);
+                        }}
+                      >
+                        <svg
+                          class="w-4 h-4 {action.danger
+                            ? 'text-rose-500 opacity-90'
+                            : 'text-sky-400 opacity-80'}"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d={action.icon}
+                          />
+                        </svg>
+                        {action.label}
+                      </button>
+                    {/if}
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+
           <!-- Thumbnail -->
           <div
             class="relative w-16 h-24 bg-slate-700 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden group/thumb"
@@ -361,7 +582,7 @@
           </div>
 
           <!-- Time and Status -->
-          <div class="text-right flex-shrink-0">
+          <div class="text-right flex-shrink-0 pr-7">
             <p class="text-sm text-slate-400">
               {formatDate(item.last_read_at)}
             </p>
@@ -394,4 +615,72 @@
   variant="danger"
   onConfirm={confirmRemove}
   onCancel={closeRemoveDialog}
+/>
+
+<Dialog
+  open={pendingDeleteItem !== null}
+  title={pendingDeleteItem?.type === "folder" ? "Remove Folder" : "Remove File"}
+  description={`Are you sure you want to move "${pendingDeleteItem?.title ?? ""}" to the Trash/Recycle Bin?`}
+  confirmText="Move to Trash"
+  variant="danger"
+  loading={deleteDialogLoading}
+  onConfirm={handleConfirmDelete}
+  onCancel={() => (pendingDeleteItem = null)}
+/>
+
+<Dialog
+  open={renameItem !== null}
+  title="Rename File"
+  description={`Enter a new name for "${renameItem?.title ?? ""}".`}
+  confirmText="Rename"
+  variant="neutral"
+  loading={renameLoading}
+  onConfirm={handleRename}
+  onCancel={() => {
+    renameItem = null;
+    renameError = "";
+  }}
+>
+  <div class="space-y-4">
+    <input
+      type="text"
+      bind:value={renameValue}
+      class="w-full px-4 py-2.5 bg-slate-950/20 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-[border-color,background-color,ring-color] duration-200"
+      placeholder="Enter new name..."
+      onkeydown={(e) => e.key === "Enter" && handleRename()}
+    />
+    {#if renameError}
+      <p class="text-sm text-red-400">{renameError}</p>
+    {/if}
+  </div>
+</Dialog>
+
+<LibraryMetadataDialogs
+  showTagEditor={tagEditorItem !== null}
+  tagEditorItemId={tagEditorItem?.id ?? null}
+  tagEditorItemTitle={tagEditorItem?.title ?? ""}
+  closeTagEditor={() => (tagEditorItem = null)}
+  handleTagChange={() => refreshItem(tagEditorItem?.id)}
+  showTypeEditor={typeEditorItem !== null}
+  typeEditorItemId={typeEditorItem?.id ?? null}
+  typeEditorItemTitle={typeEditorItem?.title ?? ""}
+  closeTypeEditor={() => (typeEditorItem = null)}
+  handleTypeChange={() => refreshItem(typeEditorItem?.id)}
+/>
+
+{#if managingArchiveItem}
+  <ArchiveManager
+    item={managingArchiveItem}
+    onClose={() => (managingArchiveItem = null)}
+  />
+{/if}
+
+<MoveToFolderDialog
+  open={moveItem !== null}
+  itemsToMove={moveItem ? [moveItem] : []}
+  onClose={() => (moveItem = null)}
+  onMoved={async () => {
+    await loadRecent(true);
+    toasts.add("Item moved successfully", "success");
+  }}
 />

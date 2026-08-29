@@ -34,11 +34,12 @@
    * 1. NAVIGATOR IDENTITY
    */
 
-  const chromeVersion = "132.0.6834.161";
+  const chromeVersion = process.versions.chrome || "150.0.7871.224";
+  const chromeMajorVersion = chromeVersion.split(".")[0];
   const uaData = {
     brands: [
-      { brand: "Google Chrome", version: "132" },
-      { brand: "Chromium", version: "132" },
+      { brand: "Google Chrome", version: chromeMajorVersion },
+      { brand: "Chromium", version: chromeMajorVersion },
       { brand: "Not:A-Brand", version: "24" },
     ],
     mobile: false,

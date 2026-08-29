@@ -4,30 +4,79 @@
   import Dialog from "./Dialog.svelte";
   import { fade } from "svelte/transition";
   import type { SelectionModel } from "../state/selection.svelte";
+  import { toasts } from "../stores/toast";
+  import {
+    MANGA_RECOGNITION_OPTIONS,
+    type MangaPreference,
+  } from "../utils/manga";
+
+  type MangaFolder = { manga_preference?: MangaPreference };
 
   let {
     selection,
     allIds = [],
+    mangaFolders = [],
+    menuCloseEpoch = 0,
     view = "library",
     onRefresh,
     onMove,
+    onSetMangaPreference,
   } = $props<{
     selection: SelectionModel;
     allIds: number[];
+    mangaFolders?: MangaFolder[];
+    menuCloseEpoch?: number;
     view: "library" | "favorites";
     onRefresh: (
       action: "favorite" | "delete" | "tags" | "move",
     ) => void | Promise<void>;
     onMove: () => void;
+    onSetMangaPreference?: (
+      preference: MangaPreference,
+    ) => void | Promise<void>;
   }>();
 
   let showBulkTagEditor = $state(false);
   let showBulkTypeEditor = $state(false);
   let showDeleteDialog = $state(false);
   let isDeleting = $state(false);
+  let showMangaRecognitionMenu = $state(false);
+  let isApplyingMangaPreference = $state(false);
+
+  const selectedMangaPreference = $derived.by<MangaPreference | null>(() => {
+    if (mangaFolders.length === 0) return null;
+    const firstPreference = mangaFolders[0].manga_preference ?? "auto";
+    return mangaFolders.every(
+      (folder: MangaFolder) =>
+        (folder.manga_preference ?? "auto") === firstPreference,
+    )
+      ? firstPreference
+      : null;
+  });
+  const selectedMangaPreferenceLabel = $derived.by(() => {
+    if (selectedMangaPreference === null) return "Mixed";
+    return MANGA_RECOGNITION_OPTIONS.find(
+      (option) => option.value === selectedMangaPreference,
+    )!.statusLabel;
+  });
+
+  $effect(() => {
+    if (selection.size === 0 || mangaFolders.length === 0) {
+      showMangaRecognitionMenu = false;
+    }
+  });
+
+  $effect(() => {
+    void menuCloseEpoch;
+    showMangaRecognitionMenu = false;
+  });
 
   function handleGlobalKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
+      if (showMangaRecognitionMenu) {
+        showMangaRecognitionMenu = false;
+        return;
+      }
       if (showBulkTagEditor) {
         showBulkTagEditor = false;
         return;
@@ -84,6 +133,13 @@
       selection.clear();
     } catch (e) {
       console.error("Bulk delete failed:", e);
+      showDeleteDialog = false;
+      selection.clear();
+      toasts.add(
+        "Some items could not be moved to the Recycle Bin. Items still on disk were kept in the library.",
+        "error",
+        7000,
+      );
     } finally {
       isDeleting = false;
     }
@@ -92,9 +148,28 @@
   function handleTagChange() {
     onRefresh("tags");
   }
+
+  async function applyMangaPreference(preference: MangaPreference) {
+    if (!onSetMangaPreference || isApplyingMangaPreference) return;
+    showMangaRecognitionMenu = false;
+    if (selectedMangaPreference === preference) return;
+
+    isApplyingMangaPreference = true;
+    try {
+      await onSetMangaPreference(preference);
+    } catch (error) {
+      console.error("Bulk manga recognition update failed:", error);
+      toasts.add("Failed to update manga recognition", "error");
+    } finally {
+      isApplyingMangaPreference = false;
+    }
+  }
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window
+  onkeydown={handleGlobalKeydown}
+  onclick={() => (showMangaRecognitionMenu = false)}
+/>
 
 {#if selection.size > 0}
   <!-- Bulk Action Bar -->
@@ -235,6 +310,145 @@
         </svg>
         <span class="font-bold text-xs sm:text-sm hidden sm:inline">Types</span>
       </button>
+
+      {#if view === "library" && mangaFolders.length > 0 && onSetMangaPreference}
+        <div class="relative">
+          <button
+            aria-haspopup="dialog"
+            aria-expanded={showMangaRecognitionMenu}
+            aria-busy={isApplyingMangaPreference}
+            disabled={isApplyingMangaPreference}
+            title={`Manga recognition: ${selectedMangaPreferenceLabel}`}
+            class="flex items-center gap-2 px-3.5 py-2 rounded-xl transition-all border group active:scale-95 disabled:cursor-wait disabled:opacity-60 {showMangaRecognitionMenu
+              ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+              : 'bg-slate-800/80 hover:bg-blue-500/20 text-slate-300 hover:text-blue-400 border-slate-700/50 hover:border-blue-500/30'}"
+            onclick={(event) => {
+              event.stopPropagation();
+              showMangaRecognitionMenu = !showMangaRecognitionMenu;
+            }}
+          >
+            <svg
+              class="w-4 h-4 transition-transform group-hover:scale-110"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
+              />
+            </svg>
+            <span class="font-bold text-xs sm:text-sm hidden sm:inline">
+              Recognition
+            </span>
+            <svg
+              class="w-3.5 h-3.5 text-slate-500"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d={showMangaRecognitionMenu ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"}
+              />
+            </svg>
+          </button>
+
+          {#if showMangaRecognitionMenu}
+            <div
+              class="absolute bottom-full right-0 z-[110] pb-3"
+              role="dialog"
+              aria-label="Manga recognition"
+              tabindex="-1"
+              onclick={(event) => event.stopPropagation()}
+              onkeydown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  showMangaRecognitionMenu = false;
+                }
+              }}
+              transition:fade={{ duration: 100 }}
+            >
+              <div
+                class="relative w-72 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-900 shadow-2xl"
+              >
+                <div
+                  class="flex items-start justify-between gap-4 border-b border-slate-800 px-4 py-3.5"
+                >
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-white">
+                      Manga recognition
+                    </p>
+                    <p class="mt-0.5 text-[11px] text-slate-400">
+                      Apply to {mangaFolders.length} selected {mangaFolders.length ===
+                      1
+                        ? "folder"
+                        : "folders"}
+                    </p>
+                  </div>
+                  <span
+                    class="flex-shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold {selectedMangaPreference ===
+                    null
+                      ? 'bg-amber-500/15 text-amber-300'
+                      : 'bg-sky-500/15 text-sky-300'}"
+                  >
+                    {selectedMangaPreferenceLabel}
+                  </span>
+                </div>
+
+                <div
+                  class="space-y-1 p-2"
+                  role="radiogroup"
+                  aria-label="Manga recognition mode"
+                >
+                  {#each MANGA_RECOGNITION_OPTIONS as option}
+                    {@const isSelected =
+                      selectedMangaPreference === option.value}
+                    <button
+                      role="radio"
+                      aria-checked={isSelected}
+                      disabled={isApplyingMangaPreference}
+                      class="group/option flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all disabled:cursor-wait disabled:opacity-60 {isSelected
+                        ? 'border-sky-500/30 bg-sky-500/10'
+                        : 'border-transparent hover:border-slate-700 hover:bg-slate-800/80'}"
+                      onclick={() => void applyMangaPreference(option.value)}
+                    >
+                      <span
+                        class="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border transition-colors {isSelected
+                          ? 'border-sky-400 bg-sky-500'
+                          : 'border-slate-600 bg-slate-800 group-hover/option:border-slate-500'}"
+                      >
+                        {#if isSelected}
+                          <span class="h-1.5 w-1.5 rounded-full bg-white"></span>
+                        {/if}
+                      </span>
+                      <span class="min-w-0">
+                        <span
+                          class="block text-sm font-medium {isSelected
+                            ? 'text-white'
+                            : 'text-slate-200'}"
+                        >
+                          {option.label}
+                        </span>
+                        <span class="mt-0.5 block text-[11px] text-slate-400">
+                          {option.description}
+                        </span>
+                      </span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
+              <div
+                class="absolute bottom-1.5 right-6 h-3 w-3 rotate-45 border-b border-r border-slate-700/80 bg-slate-900"
+              ></div>
+            </div>
+          {/if}
+        </div>
+      {/if}
 
       <button
         onclick={bulkDelete}

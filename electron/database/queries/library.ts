@@ -89,6 +89,30 @@ export function getItemById(id: number): LibraryItem | undefined {
     .get(id) as LibraryItem | undefined;
 }
 
+export function getSeriesBookItems(seriesId: number): LibraryItem[] {
+  const normalizedSeriesId = Number(seriesId || 0);
+  if (!Number.isFinite(normalizedSeriesId) || normalizedSeriesId <= 0) {
+    return [];
+  }
+
+  return getDb()
+    .prepare(
+      `
+      SELECT li.*,
+      GROUP_CONCAT(DISTINCT t.name) as tags_list,
+      GROUP_CONCAT(DISTINCT ct.name) as types_list
+      FROM library_items li
+      LEFT JOIN item_tags it ON li.id = it.item_id
+      LEFT JOIN tags t ON it.tag_id = t.id
+      LEFT JOIN item_types it2 ON li.id = it2.item_id
+      LEFT JOIN content_types ct ON it2.type_id = ct.id
+      WHERE li.type = 'book' AND li.manga_series_id = ?
+      GROUP BY li.id
+    `,
+    )
+    .all(normalizedSeriesId) as LibraryItem[];
+}
+
 export function getAllFolders(): LibraryItem[] {
   return getDb()
     .prepare("SELECT * FROM library_items WHERE type = 'folder'")
@@ -281,7 +305,8 @@ export function addItem(item: Omit<LibraryItem, "id" | "added_at">): number {
         last_read_at = coalesce(last_read_at, @last_read_at),
         current_page = @current_page,
         is_favorite = @is_favorite,
-        content_type = @content_type
+        content_type = @content_type,
+        manga_preference = coalesce(@manga_preference, manga_preference)
       WHERE id = @id
     `);
 
@@ -292,13 +317,14 @@ export function addItem(item: Omit<LibraryItem, "id" | "added_at">): number {
       is_favorite: item.is_favorite ? 1 : 0,
       content_type:
         (item as any).content_type || (item as any).contentType || null,
+      manga_preference: (item as any).manga_preference || null,
     });
     return existing.id;
   }
 
   const stmt = getDb().prepare(`
-    INSERT INTO library_items (path, title, type, page_count, cover_path, parent_id, is_favorite, reading_status, current_page, last_read_at, content_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO library_items (path, title, type, page_count, cover_path, parent_id, is_favorite, reading_status, current_page, last_read_at, content_type, manga_preference)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -313,6 +339,7 @@ export function addItem(item: Omit<LibraryItem, "id" | "added_at">): number {
     item.current_page,
     item.last_read_at,
     (item as any).content_type || (item as any).contentType || null,
+    (item as any).manga_preference || "auto",
   );
 
   return result.lastInsertRowid as number;
@@ -329,8 +356,11 @@ export function updateItem(id: number, updates: Partial<LibraryItem>) {
     "is_favorite",
     "reading_status",
     "current_page",
+    "current_page_offset",
     "last_read_at",
     "content_type",
+    "manga_series_id",
+    "manga_preference",
   ];
   const fields = Object.keys(updates).filter(
     (k) => k !== "id" && allowed.includes(k),
@@ -500,17 +530,25 @@ export function updateReadingProgress(
   currentPage: number,
   status?: "unread" | "reading" | "read",
   updateTimestamp: boolean = true,
+  currentPageOffset: number = 0,
 ): string | null {
   const existing = getDb()
     .prepare(
       "SELECT last_read_at, current_page FROM library_items WHERE id = ?",
     )
     .get(id) as
-    | { last_read_at: string | null; current_page: number }
+    | {
+        last_read_at: string | null;
+        current_page: number;
+      }
     | undefined;
 
   const updates: any = {
     current_page: currentPage,
+    current_page_offset: Math.min(
+      1,
+      Math.max(0, Number.isFinite(currentPageOffset) ? currentPageOffset : 0),
+    ),
   };
   let lastReadAt: string | null = null;
 
@@ -540,7 +578,7 @@ export function updateReadingProgress(
 export function removeFromRecent(id: number) {
   getDb()
     .prepare(
-      "UPDATE library_items SET last_read_at = NULL, current_page = 0 WHERE id = ?",
+      "UPDATE library_items SET last_read_at = NULL, current_page = 0, current_page_offset = 0 WHERE id = ?",
     )
     .run(id);
 }

@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { openLibrary } from "../../stores/app";
-  import { fly, fade } from "svelte/transition";
+  import { fly } from "svelte/transition";
 
   interface Props {
     title: string;
@@ -12,6 +11,8 @@
     onPrev: () => void;
     onToggleSettings: () => void;
     mangaMode?: boolean;
+    windowDraggable?: boolean;
+    onWindowDragStart?: (event: MouseEvent) => void;
   }
 
   let {
@@ -24,12 +25,9 @@
     onPrev,
     onToggleSettings,
     mangaMode = false,
+    windowDraggable = false,
+    onWindowDragStart,
   }: Props = $props();
-
-  // Format title if too long
-  const displayTitle = $derived(
-    title.length > 40 ? title.substring(0, 40) + "..." : title
-  );
 
   function getSliderValue(): number {
     if (totalPages <= 1) return 0;
@@ -60,17 +58,29 @@
 
 {#if show}
   <!-- Top Bar -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header
     transition:fly={{ y: -20, duration: 200 }}
-    class="absolute top-0 left-0 right-0 z-30 bg-gradient-to-b from-black/90 to-transparent pt-4 pb-12 px-6 flex justify-between items-start pointer-events-auto"
+    class="pointer-events-none absolute top-0 left-0 right-0 z-30 flex items-start justify-between bg-gradient-to-b from-black/90 to-transparent px-6 pt-4 pb-12"
   >
-    <div class="flex items-center gap-3 text-white/80 px-2">
-      <span class="font-medium text-lg drop-shadow-md select-text"
-        >{displayTitle}</span
-      >
+    <div
+      class="pointer-events-auto min-w-0 flex-1 pb-2 pl-2 pr-4 text-white/80"
+      class:cursor-move={windowDraggable}
+      onmousedown={(event) => {
+        if (!windowDraggable || event.button !== 0) return;
+        event.preventDefault();
+        onWindowDragStart?.(event);
+      }}
+    >
+      <span
+        class="block max-w-xl truncate font-medium text-lg drop-shadow-md lg:max-w-3xl xl:max-w-full"
+        class:select-text={!windowDraggable}
+        class:select-none={windowDraggable}
+        title={title}
+      >{title}</span>
     </div>
 
-    <div class="flex items-center gap-2">
+    <div class="flex shrink-0 items-center gap-2">
       <!-- Settings Toggle -->
       <button
         onclick={(e) => {
@@ -80,7 +90,7 @@
         ondblclick={(e) => {
           e.stopPropagation();
         }}
-        class="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors backdrop-blur-md"
+        class="pointer-events-auto p-2 cursor-pointer rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors backdrop-blur-md"
         title="Reader Settings"
       >
         <svg
@@ -223,7 +233,3 @@
     </div>
   </footer>
 {/if}
-
-<style>
-  /* Custom scrollbar override for range input if needed, though opacity-0 trick works best for styling */
-</style>

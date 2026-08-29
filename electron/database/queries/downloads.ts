@@ -1,5 +1,14 @@
 import { getDb } from "../database";
 
+const TERMINAL_HISTORY_STATUSES = ["completed", "failed", "cancelled"] as const;
+type DownloadHistoryScope = "manga" | "doujinshi";
+
+function getHistoryScopeCondition(scope: DownloadHistoryScope) {
+  return scope === "manga"
+    ? "content_type = 'manga'"
+    : "(content_type IS NULL OR content_type != 'manga')";
+}
+
 // --- DOWNLOAD HISTORY OPERATIONS -------------------------------------------
 export function addDownloadHistory(entry: {
   url: string;
@@ -58,6 +67,20 @@ export function getDownloadHistory(limit: number = 50) {
     .all(limit);
 }
 
+export function getDownloadHistoryByScope(
+  scope: DownloadHistoryScope,
+  limit: number = 50,
+) {
+  return getDb()
+    .prepare(
+      `SELECT * FROM download_history
+       WHERE ${getHistoryScopeCondition(scope)}
+       ORDER BY added_at DESC
+       LIMIT ?`,
+    )
+    .all(limit);
+}
+
 export function getAllDownloadHistory() {
   return getDb()
     .prepare("SELECT * FROM download_history ORDER BY added_at DESC")
@@ -84,6 +107,13 @@ export function clearDownloadHistory() {
   adjustHistorySequence();
 }
 
+export function clearDownloadHistoryByScope(scope: DownloadHistoryScope) {
+  getDb()
+    .prepare(`DELETE FROM download_history WHERE ${getHistoryScopeCondition(scope)}`)
+    .run();
+  adjustHistorySequence();
+}
+
 export function pruneDownloadHistory(limit: number) {
   getDb()
     .prepare(
@@ -93,8 +123,53 @@ export function pruneDownloadHistory(limit: number) {
   adjustHistorySequence();
 }
 
+export function pruneTerminalDownloadHistory(limit: number) {
+  const parsedLimit = Number.parseInt(String(limit), 10);
+  const safeLimit = Number.isFinite(parsedLimit) ? Math.max(0, parsedLimit) : 0;
+
+  const statusList = TERMINAL_HISTORY_STATUSES.map((status) => `'${status}'`).join(
+    ", ",
+  );
+  const whereClause = `status IN (${statusList})`;
+
+  if (safeLimit <= 0) {
+    getDb().prepare(`DELETE FROM download_history WHERE ${whereClause}`).run();
+    adjustHistorySequence();
+    return;
+  }
+
+  getDb()
+    .prepare(
+      `DELETE FROM download_history
+       WHERE ${whereClause}
+         AND id NOT IN (
+           SELECT id
+           FROM download_history
+           WHERE ${whereClause}
+           ORDER BY datetime(COALESCE(completed_at, added_at)) DESC, id DESC
+           LIMIT ?
+         )`,
+    )
+    .run(safeLimit);
+  adjustHistorySequence();
+}
+
 export function removeDownloadHistoryItem(id: number) {
   getDb().prepare("DELETE FROM download_history WHERE id = ?").run(id);
+  adjustHistorySequence();
+}
+
+export function removeDownloadHistoryItemByScope(
+  scope: DownloadHistoryScope,
+  id: number,
+) {
+  getDb()
+    .prepare(
+      `DELETE FROM download_history
+       WHERE id = ?
+         AND ${getHistoryScopeCondition(scope)}`,
+    )
+    .run(id);
   adjustHistorySequence();
 }
 
@@ -146,9 +221,23 @@ export function getDownloadsForQueue() {
     .all() as any[];
 }
 
+export function getMangaDownloadsForQueue() {
+  return getDb()
+    .prepare(
+      "SELECT * FROM download_history WHERE content_type = 'manga' AND (hidden_from_manga_queue = 0 OR hidden_from_manga_queue IS NULL) ORDER BY added_at ASC",
+    )
+    .all() as any[];
+}
+
 export function hideFromQueue(id: number) {
   getDb()
     .prepare("UPDATE download_history SET hidden_from_queue = 1 WHERE id = ?")
+    .run(id);
+}
+
+export function hideFromMangaQueue(id: number) {
+  getDb()
+    .prepare("UPDATE download_history SET hidden_from_manga_queue = 1 WHERE id = ?")
     .run(id);
 }
 

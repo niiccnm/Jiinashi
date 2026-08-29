@@ -72,7 +72,6 @@
       </div>
 
       <!-- Fit Mode -->
-      {#if viewMode !== 'webtoon'}
       <div class="space-y-3">
         <h3 class="text-xs uppercase tracking-wider text-gray-400 font-semibold">Scale Mode</h3>
         <div class="grid grid-cols-2 gap-2">
@@ -88,21 +87,29 @@
           >
             Fit Width
           </button>
-          <button 
-            class="p-2 rounded-lg text-sm border {fitMode === 'height' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-300 hover:border-gray-500'}"
-            onclick={() => update('fitMode', 'height')}
-          >
-            Fit Height
-          </button>
-          <button 
-            class="p-2 rounded-lg text-sm border {fitMode === 'fill' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-300 hover:border-gray-500'}"
-            onclick={() => update('fitMode', 'fill')}
-          >
-            Stretch
-          </button>
+          {#if viewMode !== 'webtoon'}
+            <button
+              class="p-2 rounded-lg text-sm border {fitMode === 'height' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-300 hover:border-gray-500'}"
+              onclick={() => update('fitMode', 'height')}
+            >
+              Fit Height
+            </button>
+            <button
+              class="p-2 rounded-lg text-sm border {fitMode === 'fill' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-300 hover:border-gray-500'}"
+              onclick={() => update('fitMode', 'fill')}
+            >
+              Stretch
+            </button>
+          {/if}
         </div>
+        {#if viewMode === 'webtoon'}
+          <p class="px-1 text-xs leading-relaxed text-gray-500">
+            Best Fit shows each complete page. Drag vertically to scroll or
+            sideways to move a windowed reader. The top bar and Alt-drag always
+            move it. Ctrl-scroll zooms.
+          </p>
+        {/if}
       </div>
-      {/if}
 
       <!-- Page Direction -->
       {#if viewMode !== 'webtoon'}

@@ -12,6 +12,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { fade } from "svelte/transition";
+  import type { SourceBadge } from "../manga/sourceCatalog";
 
   interface Progress {
     item: any;
@@ -20,8 +21,17 @@
     percent: number;
   }
 
-  let { item, onCancel, onRetry, onRemove, isMenuOpen, onToggleMenu } = $props<{
+  let {
+    item,
+    sourceBadge,
+    onCancel,
+    onRetry,
+    onRemove,
+    isMenuOpen,
+    onToggleMenu,
+  } = $props<{
     item: any;
+    sourceBadge: SourceBadge;
     onCancel?: (id: number) => void;
     onRetry?: (id: number) => void;
     onRemove?: (id: number) => void;
@@ -145,6 +155,18 @@
     // @ts-ignore
     window.electronAPI.downloader.openLogs(item.id);
   }
+
+  const normalizedSourceId = $derived(
+    String(sourceBadge?.sourceId || item?.source || "")
+      .trim()
+      .toLowerCase(),
+  );
+  const sourceIcon = $derived(
+    sourceBadge?.iconUrl || sourceIcons[normalizedSourceId] || "",
+  );
+  const sourceLabel = $derived(
+    String(sourceBadge?.label || item?.source || "Unknown Source").trim(),
+  );
 </script>
 
 <div
@@ -215,14 +237,15 @@
         class="flex items-center gap-1.5 font-medium bg-slate-900/50 pl-1.5 pr-2 py-0.5 rounded border border-slate-700/30 uppercase tracking-tight hover:bg-slate-800 transition-colors cursor-pointer group/source"
         title="Open in browser"
       >
-        {#if sourceIcons[item.source]}
+        {#if sourceIcon}
           <img
-            src={sourceIcons[item.source]}
-            alt={item.source}
+            src={sourceIcon}
+            alt={sourceLabel}
             class="w-3.5 h-3.5 object-contain opacity-80 group-hover/source:opacity-100"
+            referrerpolicy="no-referrer"
           />
         {/if}
-        <span>{item.source}</span>
+        <span>{sourceLabel}</span>
       </button>
 
       {#if item.status === "downloading" || item.status === "zipping"}

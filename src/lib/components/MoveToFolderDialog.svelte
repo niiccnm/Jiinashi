@@ -69,7 +69,7 @@
   async function refreshFolders() {
     isLoading = true;
     try {
-      const result = await (window.electronAPI.library as any).getAllFolders();
+      const result = await window.electronAPI.library.getAllFolders();
       if (result.success) {
         folders = result.folders || [];
         roots = result.roots || [];
@@ -193,9 +193,9 @@
 
     try {
       const itemIds = itemsToMove.map((i) => i.id);
-      const result = await (window.electronAPI.library as any).moveItems(
+      const result = await window.electronAPI.library.moveItems(
         itemIds,
-        selectedId as any,
+        selectedId,
       );
 
       if (result.success) {
@@ -233,7 +233,7 @@
         return;
       }
 
-      const result = await (window.electronAPI.library as any).createFolder(
+      const result = await window.electronAPI.library.createFolder(
         parentId,
         newFolderName,
         rootPath,

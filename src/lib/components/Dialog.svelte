@@ -39,22 +39,62 @@
         return "bg-slate-700 hover:bg-slate-600 text-white";
     }
   }
-  let mouseDownTarget: EventTarget | null = null;
+
+  let backdropPointerId: number | null = null;
+  let backdropStartX = 0;
+  let backdropStartY = 0;
+  let backdropDragged = false;
+  const backdropDragThresholdPx = 6;
+
+  function resetBackdropPointerState() {
+    backdropPointerId = null;
+    backdropDragged = false;
+  }
+
+  function handleBackdropPointerDown(e: PointerEvent) {
+    if (e.target !== e.currentTarget) return;
+    backdropPointerId = e.pointerId;
+    backdropStartX = e.clientX;
+    backdropStartY = e.clientY;
+    backdropDragged = false;
+    e.preventDefault();
+  }
+
+  function handleBackdropPointerMove(e: PointerEvent) {
+    if (backdropPointerId !== e.pointerId || backdropDragged) return;
+    const dx = Math.abs(e.clientX - backdropStartX);
+    const dy = Math.abs(e.clientY - backdropStartY);
+    if (dx > backdropDragThresholdPx || dy > backdropDragThresholdPx) {
+      backdropDragged = true;
+    }
+  }
+
+  function handleBackdropPointerUp(e: PointerEvent) {
+    if (backdropPointerId !== e.pointerId) return;
+    const shouldClose = e.target === e.currentTarget && !backdropDragged;
+    resetBackdropPointerState();
+    if (shouldClose) onCancel();
+  }
+
+  function handleBackdropPointerCancel(e: PointerEvent) {
+    if (backdropPointerId !== e.pointerId) return;
+    resetBackdropPointerState();
+  }
 </script>
 
 {#if open}
   <!-- Backdrop -->
   <div
     class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+    data-drag-scroll-ignore
     transition:fade={{ duration: 200 }}
     role="presentation"
-    onmousedown={(e) => {
-      mouseDownTarget = e.target;
-    }}
-    onclick={(e) => {
-      if (e.target === e.currentTarget && mouseDownTarget === e.currentTarget) {
-        onCancel();
-      }
+    onpointerdown={handleBackdropPointerDown}
+    onpointermove={handleBackdropPointerMove}
+    onpointerup={handleBackdropPointerUp}
+    onpointercancel={handleBackdropPointerCancel}
+    onselectstart={(e) => {
+      if (e.target === e.currentTarget) e.preventDefault();
     }}
   >
     <!-- Modal Container (to hold shadow separate from overflow-hidden content) -->

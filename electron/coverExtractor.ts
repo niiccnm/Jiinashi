@@ -284,7 +284,7 @@ export async function extractCoverFromFolder(
 ): Promise<string | null> {
   try {
     const files = fs.readdirSync(folderPath);
-    const supportedExtensions = [
+    const archiveExtensions = [
       ".cbz",
       ".zip",
       ".cbr",
@@ -292,7 +292,6 @@ export async function extractCoverFromFolder(
       ".cb7",
       ".7z",
       ".pdf",
-      ...IMAGE_EXTENSIONS,
     ];
 
     // Natural sort
@@ -300,29 +299,42 @@ export async function extractCoverFromFolder(
       a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
 
+    // Prefer archive/document entries so helper images like "cover.jpg"
+    // do not override chapter-based folder covers.
     for (const file of sortedFiles) {
       const filePath = path.join(folderPath, file);
       const stat = fs.statSync(filePath);
 
       if (stat.isFile()) {
         const ext = path.extname(file).toLowerCase();
-        if (supportedExtensions.includes(ext)) {
+        if (archiveExtensions.includes(ext)) {
           const hiddenPages = hiddenPagesLookup
             ? hiddenPagesLookup(filePath)
             : [];
-          return extractCover(filePath, hiddenPages);
+          const cover = await extractCover(filePath, hiddenPages);
+          if (cover) {
+            return cover;
+          }
         }
       }
     }
 
-    // Recurse into subdirectories
+    // Fallback to plain images only when no archive/document cover works.
     for (const file of sortedFiles) {
       const filePath = path.join(folderPath, file);
       const stat = fs.statSync(filePath);
 
-      if (stat.isDirectory()) {
-        const cover = await extractCoverFromFolder(filePath, hiddenPagesLookup);
-        if (cover) return cover;
+      if (stat.isFile()) {
+        const ext = path.extname(file).toLowerCase();
+        if (IMAGE_EXTENSIONS.includes(ext)) {
+          const hiddenPages = hiddenPagesLookup
+            ? hiddenPagesLookup(filePath)
+            : [];
+          const cover = await extractCover(filePath, hiddenPages);
+          if (cover) {
+            return cover;
+          }
+        }
       }
     }
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { fade, fly } from "svelte/transition";
+  import { fade } from "svelte/transition";
   import {
     openBook,
     appState,
@@ -9,21 +9,29 @@
   } from "../stores/app";
   import { dragScroll } from "../utils/dragScroll";
   import Dialog from "../components/Dialog.svelte";
-  import TagSelector from "../components/TagSelector.svelte";
-  import TypeSelector from "../components/TypeSelector.svelte";
   import BulkSelection from "../components/BulkSelection.svelte";
   import ArchiveManager from "../components/ArchiveManager.svelte";
   import FolderSwitcher from "../components/FolderSwitcher.svelte";
   import MoveToFolderDialog from "../components/MoveToFolderDialog.svelte";
+  import LibraryGridItem from "../components/Library/LibraryGridItem.svelte";
+  import LibraryMetadataDialogs from "../components/Library/LibraryMetadataDialogs.svelte";
+  import LibraryScanOverlay from "../components/Library/LibraryScanOverlay.svelte";
+  import MangaLibraryView from "../components/manga/MangaLibraryView.svelte";
   import { SelectionModel } from "../state/selection.svelte";
   import { toasts } from "../stores/toast";
   import type { LibraryItem } from "../stores/app";
+  import type { MangaPreference } from "../utils/manga";
+  import type {
+    MlvChapterActions,
+    MlvSelectionContext,
+  } from "../components/manga/library-view/mlv-types";
 
   interface FolderView {
     id: number | null;
     items: LibraryItem[];
     scrollTop: number;
     title: string;
+    renderLimit: number;
   }
 
   const LANGUAGE_CODES: Record<string, string> = {
@@ -52,16 +60,107 @@
     node.select();
   }
 
-  function restoreScroll(node: HTMLElement, scrollTop: number) {
-    node.scrollTop = scrollTop;
-    return {
-      update(newScrollTop: number) {
-        // Only scroll if significantly different to allow manual scrolling
-        if (Math.abs(node.scrollTop - newScrollTop) > 50) {
-          node.scrollTop = newScrollTop;
-        }
-      },
+  let activeNavigationToken = 0;
+  let folderViewState = new Map<
+    string,
+    { scrollTop: number; renderLimit: number }
+  >();
+
+  function beginNavigationToken() {
+    activeNavigationToken += 1;
+    return activeNavigationToken;
+  }
+
+  function cancelPendingNavigation() {
+    activeNavigationToken += 1;
+    loading = false;
+    skipItemAnimation = false;
+  }
+
+  function getFolderStateKey(
+    folderId: number | null,
+    root: string = selectedRoot,
+  ): string {
+    return `${root || "all"}:${folderId?.toString() ?? "root"}`;
+  }
+
+  function readFolderViewState(
+    folderId: number | null,
+    root: string = selectedRoot,
+  ): { scrollTop: number; renderLimit: number } {
+    const saved = folderViewState.get(getFolderStateKey(folderId, root));
+    const scrollTop = Math.max(0, Number(saved?.scrollTop || 0));
+    const renderLimit = Math.max(50, Number(saved?.renderLimit || 50));
+    return { scrollTop, renderLimit };
+  }
+
+  function writeFolderViewState(
+    folderId: number | null,
+    scrollTop: number,
+    renderLimitValue: number,
+    root: string = selectedRoot,
+  ) {
+    folderViewState.set(getFolderStateKey(folderId, root), {
+      scrollTop: Math.max(0, Number(scrollTop || 0)),
+      renderLimit: Math.max(50, Number(renderLimitValue || 50)),
+    });
+  }
+
+  let scrollRestoreSequence = 0;
+
+  function scheduleActiveScrollRestore(
+    expectedFolderId: number | null,
+    targetScrollTop: number,
+  ) {
+    const runSequence = ++scrollRestoreSequence;
+    const clampedTarget = Math.max(0, Number(targetScrollTop || 0));
+    let attempts = 24;
+
+    const run = () => {
+      if (runSequence !== scrollRestoreSequence) return;
+      const current = viewStack[activeIndex];
+      if (!current || current.id !== expectedFolderId) return;
+
+      const activeViewEl = document.querySelector(
+        '[data-stack-view="true"][data-active-view="true"]',
+      ) as HTMLElement | null;
+      if (!activeViewEl) {
+        if (attempts-- > 0) requestAnimationFrame(run);
+        return;
+      }
+
+      if (Math.abs(activeViewEl.scrollTop - clampedTarget) > 1) {
+        const prevBehavior = activeViewEl.style.scrollBehavior;
+        activeViewEl.style.scrollBehavior = "auto";
+        activeViewEl.scrollTop = clampedTarget;
+        requestAnimationFrame(() => {
+          activeViewEl.style.scrollBehavior = prevBehavior;
+        });
+      }
+
+      if (Math.abs(activeViewEl.scrollTop - clampedTarget) > 1 && attempts-- > 0) {
+        requestAnimationFrame(run);
+      }
     };
+
+    tick().then(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(run);
+      });
+    });
+  }
+
+  function persistActiveViewScroll() {
+    if (activeIndex < 0 || !viewStack[activeIndex]) return;
+    const activeViewEl = document.querySelector(
+      '[data-stack-view="true"][data-active-view="true"]',
+    ) as HTMLElement | null;
+    if (!activeViewEl) return;
+    const activeView = viewStack[activeIndex];
+    activeView.scrollTop = activeViewEl.scrollTop;
+    activeView.renderLimit = renderLimit;
+    writeFolderViewState(activeView.id, activeView.scrollTop, activeView.renderLimit);
+    viewStack = viewStack;
   }
 
   let viewStack = $state<FolderView[]>([]);
@@ -73,6 +172,7 @@
       items: [],
       scrollTop: 0,
       title: "Library",
+      renderLimit: 50,
     },
   );
 
@@ -89,6 +189,10 @@
   );
 
   let currentFolderId = $derived(currentView.id);
+  let currentFolderMeta = $state<LibraryItem | null>(null);
+  let currentFolderMetaRequestId = 0;
+  let historyFolderResolveRequestId = 0;
+  let blockedHistoryFolderId: number | null = null;
 
   // Sync state for breadcrumbs
   $effect(() => {
@@ -100,39 +204,129 @@
     });
   });
 
+  $effect(() => {
+    const folderId = currentFolderId;
+    const requestId = ++currentFolderMetaRequestId;
+
+    if (folderId === null) {
+      currentFolderMeta = null;
+      return;
+    }
+
+    const parentItems =
+      activeIndex > 0 && viewStack[activeIndex - 1]
+        ? viewStack[activeIndex - 1].items
+        : [];
+    const folderFromParent = parentItems.find((item) => item.id === folderId);
+    if (folderFromParent) {
+      currentFolderMeta = folderFromParent;
+      return;
+    }
+
+    currentFolderMeta = null;
+    window.electronAPI.library
+      .getItem(folderId)
+      .then((item) => {
+        if (requestId !== currentFolderMetaRequestId) return;
+        currentFolderMeta = item ?? null;
+      })
+      .catch(() => {
+        if (requestId !== currentFolderMetaRequestId) return;
+        currentFolderMeta = null;
+      });
+  });
+
   // Watch for external folder changes (e.g. from history navigation)
   $effect(() => {
     const desiredFolderId = $appState.libraryState.currentFolderId;
-    // If the state dictates a folder different from what we are showing
-    if (desiredFolderId !== currentFolderId) {
-      // If we are just moving back up the stack (parent)
-      const parentView = viewStack[viewStack.length - 2];
-      if (parentView && parentView.id === desiredFolderId) {
-        viewStack.pop();
-        viewStack = viewStack;
-      } else {
-        // History jump: slice stack if found, else open folder.
-        const foundIndex = viewStack.findIndex((v) => v.id === desiredFolderId);
-        if (foundIndex !== -1) {
-          viewStack = viewStack.slice(0, foundIndex + 1);
-        } else {
-          // Forward nav: find folder info in current items to open.
-          const childFolder =
-            activeIndex >= 0
-              ? viewStack[activeIndex].items.find(
-                  (i) => i.id === desiredFolderId,
-                )
-              : null;
-
-          if (childFolder) {
-            openFolder(childFolder.id, childFolder.title);
-          } else {
-            // Fallback: optimistically open with 'Folder' title if data is missing.
-            openFolder(desiredFolderId, "Folder");
-          }
-        }
-      }
+    if (desiredFolderId === currentFolderId) {
+      blockedHistoryFolderId = null;
+      return;
     }
+    if (
+      blockedHistoryFolderId !== null &&
+      desiredFolderId === blockedHistoryFolderId
+    ) {
+      return;
+    }
+    // If the state dictates a folder different from what we are showing
+    cancelPendingNavigation();
+    persistActiveViewScroll();
+    // If we are just moving back up the stack (parent)
+    const parentView = viewStack[viewStack.length - 2];
+    if (parentView && parentView.id === desiredFolderId) {
+      blockedHistoryFolderId = null;
+      viewStack.pop();
+      viewStack = viewStack;
+      if (!searchQuery.trim()) {
+        renderLimit = Number(parentView.renderLimit || 50);
+      }
+      scheduleActiveScrollRestore(parentView.id, parentView.scrollTop);
+      return;
+    }
+
+    // History jump: slice stack if found, else open folder.
+    const foundIndex = viewStack.findIndex((v) => v.id === desiredFolderId);
+    if (foundIndex !== -1) {
+      blockedHistoryFolderId = null;
+      viewStack = viewStack.slice(0, foundIndex + 1);
+      const targetView = viewStack[viewStack.length - 1];
+      if (targetView) {
+        if (!searchQuery.trim()) {
+          renderLimit = Number(targetView.renderLimit || 50);
+        }
+        scheduleActiveScrollRestore(targetView.id, targetView.scrollTop);
+      }
+      return;
+    }
+
+    // Forward nav: find folder info in current items to open.
+    const childFolder =
+      activeIndex >= 0
+        ? viewStack[activeIndex].items.find((i) => i.id === desiredFolderId)
+        : null;
+    if (childFolder) {
+      blockedHistoryFolderId = null;
+      openFolder(childFolder.id, childFolder.title);
+      return;
+    }
+
+    const requestedFolderId = Number(desiredFolderId || 0);
+    if (!Number.isFinite(requestedFolderId) || requestedFolderId <= 0) {
+      blockedHistoryFolderId = requestedFolderId > 0 ? requestedFolderId : null;
+      return;
+    }
+
+    const requestedRoot = selectedRoot;
+    const resolveRequestId = ++historyFolderResolveRequestId;
+    window.electronAPI.library
+      .getItem(requestedFolderId)
+      .then((resolvedFolder) => {
+        if (resolveRequestId !== historyFolderResolveRequestId) return;
+        if ($appState.currentView !== "library") return;
+        if ($appState.libraryState.currentFolderId !== requestedFolderId) return;
+        if (selectedRoot !== requestedRoot) return;
+        if (!resolvedFolder || resolvedFolder.type !== "folder") {
+          blockedHistoryFolderId = requestedFolderId;
+          console.warn(
+            `[Library] Ignoring invalid history folder target id=${requestedFolderId}`,
+          );
+          return;
+        }
+        if (requestedRoot && !isPathInRoot(resolvedFolder.path, requestedRoot)) {
+          blockedHistoryFolderId = requestedFolderId;
+          console.warn(
+            `[Library] Ignoring history folder outside selected root id=${requestedFolderId} root=${requestedRoot}`,
+          );
+          return;
+        }
+        blockedHistoryFolderId = null;
+        openFolder(resolvedFolder.id, resolvedFolder.title || "Folder");
+      })
+      .catch(() => {
+        if (resolveRequestId !== historyFolderResolveRequestId) return;
+        blockedHistoryFolderId = requestedFolderId;
+      });
   });
 
   let itemsCache = new Map<string, LibraryItem[]>();
@@ -140,6 +334,109 @@
 
   function getCacheKey(folderId: number | null): string {
     return `${selectedRoot || "all"}:${folderId?.toString() ?? "root"}`;
+  }
+
+  function normalizeComparablePath(value: string): string {
+    return String(value || "")
+      .replace(/\\/g, "/")
+      .toLowerCase();
+  }
+
+  function isPathInRoot(itemPath: string, rootPath: string): boolean {
+    const normalizedItem = normalizeComparablePath(itemPath);
+    const normalizedRoot = normalizeComparablePath(rootPath);
+    if (!normalizedRoot) return true;
+    return (
+      normalizedItem === normalizedRoot ||
+      normalizedItem.startsWith(`${normalizedRoot}/`)
+    );
+  }
+
+  function parseCacheKey(key: string): {
+    root: string;
+    folderId: number | null;
+  } {
+    const splitAt = key.lastIndexOf(":");
+    if (splitAt < 0) return { root: "all", folderId: null };
+    const root = key.slice(0, splitAt) || "all";
+    const folderPart = key.slice(splitAt + 1);
+    return {
+      root,
+      folderId: folderPart === "root" ? null : Number.parseInt(folderPart, 10),
+    };
+  }
+
+  function getMangaSeriesId(item: LibraryItem): number {
+    const value = Number(item?.manga_series_id || 0);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+
+  function getCoverSrc(
+    item: Pick<LibraryItem, "cover_path" | "_coverVersion">,
+  ): string | null {
+    const rawPath = String(item?.cover_path || "").trim();
+    if (!rawPath) return null;
+    const base = `media:///${rawPath.replace(/\\/g, "/")}`;
+    const coverVersion = Number(item?._coverVersion || 0);
+    return coverVersion > 0 ? `${base}?v=${coverVersion}` : base;
+  }
+
+  const COVER_PRELOAD_IMAGE_TIMEOUT_MS = 180;
+  const COVER_PRELOAD_TOTAL_BUDGET_MS = 320;
+
+  function preloadImageWithTimeout(src: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const img = new Image();
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        img.onload = null;
+        img.onerror = null;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        resolve();
+      };
+
+      img.onload = finish;
+      img.onerror = finish;
+      timer = setTimeout(finish, COVER_PRELOAD_IMAGE_TIMEOUT_MS);
+      img.src = src;
+    });
+  }
+
+  function getCoverPreloadCount(): number {
+    if (gridSize === "small") return 30;
+    if (gridSize === "large") return 14;
+    return 22;
+  }
+
+  async function preloadFolderCovers(folderItems: LibraryItem[]): Promise<void> {
+    const sources = folderItems
+      .slice(0, getCoverPreloadCount())
+      .map((item) => getCoverSrc(item))
+      .filter((src): src is string => Boolean(src));
+    if (!sources.length) return;
+
+    const preloadAll = Promise.all(sources.map((src) => preloadImageWithTimeout(src)));
+    await Promise.race([
+      preloadAll,
+      new Promise<void>((resolve) =>
+        setTimeout(resolve, COVER_PRELOAD_TOTAL_BUDGET_MS),
+      ),
+    ]);
+  }
+
+  function releaseSkipItemAnimation() {
+    tick().then(() => {
+      requestAnimationFrame(() => {
+        skipItemAnimation = false;
+      });
+    });
   }
 
   let searchQuery = $state("");
@@ -166,19 +463,89 @@
 
   let lastResetFolderId = $state<number | null>(null);
   let lastResetSearchQuery = $state("");
+  let hasInitializedRootView = $state(false);
 
   let selectedRoot = $state(localStorage.getItem("librarySelectedRoot") || "");
   let librarySortOrder = $state<"alphabetical" | "imported">("alphabetical");
   let skipItemAnimation = $state(false);
+  let mangaSeriesViewDisabled = $state(
+    localStorage.getItem("mangaSeriesViewDisabled") === "true",
+  );
+  const mangaSeriesIdsInCurrentFolder = $derived.by(() => {
+    const ids = currentView.items
+      .map((item) => getMangaSeriesId(item))
+      .filter((id) => id > 0);
+    return Array.from(new Set(ids));
+  });
+  const inMangaContext = $derived.by(() =>
+    Boolean(currentFolderMeta?.manga_preference === "force_manga"),
+  );
+  const hasDirectLinkedMangaItems = $derived.by(() =>
+    currentView.items.some(
+      (item) => item.type !== "folder" && getMangaSeriesId(item) > 0,
+    ),
+  );
+  const mangaSeriesViewActive = $derived(
+    inMangaContext && !mangaSeriesViewDisabled && hasDirectLinkedMangaItems,
+  );
+  let lastMangaContainerDebugKey = $state("");
+  let menuCloseEpoch = $state(0);
+  let mlvVisibleChapterIds = $state<number[]>([]);
+  function areSameNumberIds(a: number[], b: number[]) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+  const mlvSelectionContext: MlvSelectionContext = {
+    selection,
+    onVisibleChapterIdsChange: (ids: number[]) => {
+      const nextIds = Array.from(
+        new Set(
+          ids
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ),
+      );
+      if (areSameNumberIds(nextIds, mlvVisibleChapterIds)) return;
+      mlvVisibleChapterIds = nextIds;
+    },
+  };
+
+  $effect(() => {
+    if (!mangaSeriesViewActive && mlvVisibleChapterIds.length > 0) {
+      mlvVisibleChapterIds = [];
+    }
+  });
+
+  $effect(() => {
+    const inContext = inMangaContext;
+    const hasDirectItems = hasDirectLinkedMangaItems;
+    const folderId = currentFolderId;
+    const root = selectedRoot;
+    if (!inContext || hasDirectItems) return;
+    const key = `${String(folderId ?? "root")}::${String(root || "")}`;
+    if (key === lastMangaContainerDebugKey) return;
+    lastMangaContainerDebugKey = key;
+    console.debug(
+      `[Library] Manga context container detected; keeping grid view (folderId=${String(folderId)}, root=${String(root || "")})`,
+    );
+  });
 
   $effect(() => {
     // Reactive dependency on selectedRoot
     const root = selectedRoot;
+    const isFirstRootLoad = !hasInitializedRootView;
     localStorage.setItem("librarySelectedRoot", root);
 
     // When root changes, reset to the top level of the library
     // Use tick to ensure state is clean before loading
     tick().then(async () => {
+      cancelPendingNavigation();
+      if (isFirstRootLoad) {
+        loading = true;
+      }
       itemsCache.clear();
 
       try {
@@ -188,21 +555,8 @@
         const getItems = window.electronAPI.library.getItems as any;
         const folderItems = await getItems(null, root);
         itemsCache.set(cacheKey, folderItems);
-
-        // Preload covers to prevent image pop-in
-        const itemsToPreload = folderItems.slice(0, 30);
-        await Promise.all(
-          itemsToPreload.map((item: any) => {
-            const coverPath = item.cover_path;
-            if (!coverPath) return Promise.resolve();
-            return new Promise((resolve) => {
-              const img = new Image();
-              img.onload = resolve;
-              img.onerror = resolve;
-              img.src = `media:///${coverPath.replace(/\\/g, "/")}`;
-            });
-          }),
-        );
+        await preloadFolderCovers(folderItems);
+        const rootState = readFolderViewState(null, root);
 
         // Atomically replace viewStack with new data (no empty state)
         skipItemAnimation = true;
@@ -210,22 +564,33 @@
           {
             id: null,
             items: folderItems,
-            scrollTop: 0,
+            scrollTop: rootState.scrollTop,
             title: "Library",
+            renderLimit: rootState.renderLimit,
           },
         ];
-        // Reset animation suppression after a tick
-        setTimeout(() => {
-          skipItemAnimation = false;
-        }, 50);
+        // Reset animation suppression after first paint
+        releaseSkipItemAnimation();
       } catch (e) {
         console.error("Failed to switch library root", e);
         // Fallback to standard open if pre-fetch fails
         viewStack = [];
-        openFolder(null, "Library", false);
+        await openFolder(null, "Library", false);
+      } finally {
+        if (isFirstRootLoad) {
+          loading = false;
+          hasInitializedRootView = true;
+        }
       }
       refreshGlobalCount();
     });
+  });
+
+  $effect(() => {
+    localStorage.setItem(
+      "mangaSeriesViewDisabled",
+      mangaSeriesViewDisabled ? "true" : "false",
+    );
   });
 
   $effect(() => {
@@ -234,7 +599,12 @@
       currentFolderId !== lastResetFolderId ||
       searchQuery !== lastResetSearchQuery
     ) {
-      renderLimit = 50;
+      const savedLimit = Number(currentView?.renderLimit || 0);
+      if (searchQuery.trim().length > 0) {
+        renderLimit = 50;
+      } else {
+        renderLimit = savedLimit > 0 ? savedLimit : 50;
+      }
       lastResetFolderId = currentFolderId;
       lastResetSearchQuery = searchQuery;
     }
@@ -250,7 +620,17 @@
       (entries) => {
         if (entries[0].isIntersecting && renderLimit < filteredItems.length) {
           // Incrementally load more items as user scrolls
-          renderLimit += 50;
+          const nextLimit = Math.min(renderLimit + 50, filteredItems.length);
+          renderLimit = nextLimit;
+          if (activeIndex >= 0 && viewStack[activeIndex]) {
+            viewStack[activeIndex].renderLimit = nextLimit;
+            writeFolderViewState(
+              viewStack[activeIndex].id,
+              viewStack[activeIndex].scrollTop,
+              viewStack[activeIndex].renderLimit,
+            );
+            viewStack = viewStack;
+          }
         }
       },
       { rootMargin: "500px" },
@@ -321,6 +701,7 @@
   $effect(() => {
     const unsubscribe = window.electronAPI.library.onCleared(async () => {
       try {
+        selectedRoot = "";
         itemsCache.clear();
         pendingItems = [];
         realTotalScanned = 0;
@@ -364,13 +745,8 @@
       // Clear cache to force fresh fetch
       itemsCache.clear();
       refreshGlobalCount();
-      // Reload current view silently
-      const current = viewStack[activeIndex];
-      if (current) {
-        openFolder(current.id, current.title, true);
-      } else {
-        openFolder(null, "Library", true);
-      }
+      // Reload all open levels (current + parents) to avoid stale back-navigation.
+      refreshOpenViewStack();
     });
 
     return () => {
@@ -385,8 +761,14 @@
     title: string,
     silent = false,
   ) {
+    const navToken = !silent
+      ? beginNavigationToken()
+      : activeNavigationToken;
     if (!silent) {
+      persistActiveViewScroll();
       loading = true;
+      // Avoid opacity-based entry animation on navigation; it reads as a flash.
+      skipItemAnimation = true;
       // Reset focus to prevent ghost navigation in new view
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
@@ -405,21 +787,9 @@
       } else {
         folderItems = itemsCache.get(cacheKey)!;
       }
-
-      // Preload visible images to prevent painting flash
-      const itemsToPreload = folderItems.slice(0, 30);
-      await Promise.all(
-        itemsToPreload.map((item) => {
-          const coverPath = item.cover_path;
-          if (!coverPath) return Promise.resolve();
-          return new Promise((resolve) => {
-            const img = new Image();
-            img.onload = resolve;
-            img.onerror = resolve;
-            img.src = `media:///${coverPath.replace(/\\/g, "/")}`;
-          });
-        }),
-      );
+      if (!silent) await preloadFolderCovers(folderItems);
+      if (!silent && navToken !== activeNavigationToken) return;
+      const savedState = readFolderViewState(folderId);
 
       // Push new view or update existing if silent
       if (silent) {
@@ -427,13 +797,17 @@
         const index = viewStack.findIndex((v) => v.id === folderId);
         if (index !== -1) {
           viewStack[index].items = folderItems;
+          if (!Number.isFinite(viewStack[index].renderLimit)) {
+            viewStack[index].renderLimit = 50;
+          }
         } else if (viewStack.length === 0) {
           viewStack = [
             {
               id: folderId,
               items: folderItems,
-              scrollTop: 0,
+              scrollTop: savedState.scrollTop,
               title: title,
+              renderLimit: savedState.renderLimit,
             },
           ];
         }
@@ -441,22 +815,37 @@
         viewStack.push({
           id: folderId,
           items: folderItems,
-          scrollTop: 0,
+          scrollTop: savedState.scrollTop,
           title: title,
+          renderLimit: savedState.renderLimit,
         });
       }
 
       // Svelte 5 handling of array mutation
       viewStack = viewStack;
+      if (!silent) {
+        const targetView = viewStack[viewStack.length - 1];
+        if (targetView) {
+          scheduleActiveScrollRestore(targetView.id, targetView.scrollTop);
+        }
+      }
     } catch (e) {
       console.error(e);
     } finally {
-      if (!silent) loading = false;
+      if (!silent && navToken === activeNavigationToken) {
+        loading = false;
+        releaseSkipItemAnimation();
+      }
     }
   }
 
   function handleBack() {
+    // Always cancel any pending forward/open navigation first.
+    // This covers rapid back presses before async openFolder resolves.
+    cancelPendingNavigation();
+
     if (viewStack.length > 1) {
+      persistActiveViewScroll();
       const parentView = viewStack[viewStack.length - 2];
 
       // Try history-aware back navigation to avoid duplicate entries
@@ -468,12 +857,18 @@
       if (!didHistoryBack) {
         viewStack.pop();
         viewStack = viewStack;
+        if (!searchQuery.trim()) {
+          renderLimit = Number(parentView.renderLimit || 50);
+        }
+        scheduleActiveScrollRestore(parentView.id, parentView.scrollTop);
       }
     }
   }
 
   function navigateToStackIndex(index: number) {
     if (index >= 0 && index < viewStack.length) {
+      cancelPendingNavigation();
+      persistActiveViewScroll();
       // If navigating to immediate parent, try history back
       if (index === viewStack.length - 2) {
         const didHistoryBack = tryNavigateBackTo({
@@ -484,13 +879,44 @@
       }
 
       viewStack = viewStack.slice(0, index + 1);
+      const targetView = viewStack[viewStack.length - 1];
+      if (targetView) {
+        if (!searchQuery.trim()) {
+          renderLimit = Number(targetView.renderLimit || 50);
+        }
+        scheduleActiveScrollRestore(targetView.id, targetView.scrollTop);
+      }
     }
+  }
+
+  function handleBackFromMangaSeriesView() {
+    if (viewStack.length > 1) {
+      handleBack();
+      return;
+    }
+    mangaSeriesViewDisabled = true;
   }
 
   function handleGlobalKeydown(e: any) {
     if ($appState.currentView !== "library") return;
 
     // Keyboard Shortcuts
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      e.shiftKey &&
+      ((typeof e.key === "string" && e.key.toLowerCase() === "v") ||
+        e.code === "KeyV")
+    ) {
+      e.preventDefault();
+      if (mangaSeriesViewActive) {
+        mangaSeriesViewDisabled = true;
+        return;
+      }
+      if (!inMangaContext) return;
+      mangaSeriesViewDisabled = false;
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "n") {
       e.preventDefault();
       openCreateFolderDialog();
@@ -784,8 +1210,8 @@
     });
   }
 
-  async function deleteItem(item: LibraryItem, event: MouseEvent) {
-    event.stopPropagation();
+  async function deleteItem(item: LibraryItem, event?: MouseEvent) {
+    event?.stopPropagation();
     pendingDeleteItem = item;
     showDeleteDialog = true;
   }
@@ -889,16 +1315,16 @@
     return ICONS[name.toLowerCase()] || "📄";
   }
 
-  function openTagEditor(item: LibraryItem, event: MouseEvent) {
-    event.stopPropagation();
+  function openTagEditor(item: LibraryItem, event?: MouseEvent) {
+    event?.stopPropagation();
     tagEditorItemId = item.id;
     tagEditorItemTitle = item.title;
     tagEditorItemTitle = item.title;
     showTagEditor = true;
   }
 
-  function openTypeEditor(item: LibraryItem, event: MouseEvent) {
-    event.stopPropagation();
+  function openTypeEditor(item: LibraryItem, event?: MouseEvent) {
+    event?.stopPropagation();
     typeEditorItemId = item.id;
     typeEditorItemTitle = item.title;
     showTypeEditor = true;
@@ -1074,6 +1500,68 @@
     activeMenuId = null;
   }
 
+  const mlvChapterActions: MlvChapterActions = {
+    editTags: (item) => openTagEditor(item),
+    setType: (item) => openTypeEditor(item),
+    manageContent: (item) => {
+      managingArchiveItem = item;
+    },
+    moveItem: (item) => {
+      itemsToMove = [item];
+      showMoveDialog = true;
+    },
+    rename: (item) => {
+      openRenameDialog(item);
+    },
+    openLocation: (item) => {
+      handleShowInFolder(item);
+    },
+    deleteItem: (item) => deleteItem(item),
+  };
+
+  async function refreshCurrentViewSilently() {
+    itemsCache.clear();
+    await refreshOpenViewStack();
+  }
+
+  async function setItemMangaPreference(
+    item: LibraryItem,
+    preference: MangaPreference,
+  ) {
+    try {
+      const result = await persistItemMangaPreference(item, preference);
+
+      if (!result?.success) {
+        toasts.add(
+          result?.error || "Failed to update manga preference",
+          "error",
+        );
+        return;
+      }
+
+      await refreshCurrentViewSilently();
+      if (preference === "force_manga") {
+        toasts.add("Folder set as manga", "success");
+      } else if (preference === "force_non_manga") {
+        toasts.add("Folder set as non-manga", "success");
+      } else {
+        toasts.add("Manga recognition set to auto", "success");
+      }
+    } catch (error) {
+      console.error("Failed to set manga preference:", error);
+      toasts.add("Failed to update manga preference", "error");
+    }
+  }
+
+  function persistItemMangaPreference(
+    item: LibraryItem,
+    preference: MangaPreference,
+  ) {
+    return window.electronAPI.library.setMangaPreference(item.id, preference, {
+      recursive: item.type === "folder",
+    });
+  }
+
   async function handleConfirmDelete() {
     if (!pendingDeleteItem) return;
 
@@ -1100,6 +1588,13 @@
       showDeleteDialog = false;
       pendingDeleteItem = null;
       refreshGlobalCount();
+    } catch (error) {
+      console.error("Failed to delete library item:", error);
+      toasts.add(
+        "The item could not be moved to the Recycle Bin.",
+        "error",
+        6000,
+      );
     } finally {
       deleteDialogLoading = false;
     }
@@ -1190,13 +1685,13 @@
   let lastScannedCover = $state<string | null>(null);
   let totalScanned = $state(0);
   let pendingItems: LibraryItem[] = [];
-  let lastUpdateTimestamp = 0;
   let realTotalScanned = 0;
 
   $effect(() => {
     const unsubscribe = window.electronAPI.library.onItemAdded((item) => {
       // Only used for non-scan additions (scan uses scan-progress + refresh at end).
       if (isScanning) return;
+      if (selectedRoot && !isPathInRoot(item.path, selectedRoot)) return;
 
       if (item.parent_id === currentFolderId) {
         pendingItems.push(item);
@@ -1204,9 +1699,11 @@
 
       // Update local cache to ensure it persists on navigation
       itemsCache.forEach((cachedItems, key) => {
-        const parts = key.split(":");
-        const idPart = parts[parts.length - 1]; // Last part is id or "root"
-        const cacheFolderId = idPart === "root" ? null : parseInt(idPart);
+        const { root: cacheRoot, folderId: cacheFolderId } = parseCacheKey(key);
+        const rootFilter = cacheRoot === "all" ? "" : cacheRoot;
+        if (rootFilter && !isPathInRoot(item.path, rootFilter)) {
+          return;
+        }
 
         if (cacheFolderId === item.parent_id) {
           if (!cachedItems.some((i) => i.id === item.id)) {
@@ -1218,8 +1715,22 @@
 
     const unsubscribeUpdated = window.electronAPI.library.onItemUpdated(
       (updatedItem) => {
+        const visibleInCurrentRoot =
+          !selectedRoot || isPathInRoot(updatedItem.path, selectedRoot);
+
         viewStack = viewStack.map((v) => {
+          const matchesViewRoot =
+            !selectedRoot || isPathInRoot(updatedItem.path, selectedRoot);
           const exists = v.items.some((i) => i.id === updatedItem.id);
+
+          if (!matchesViewRoot) {
+            if (!exists) return v;
+            return {
+              ...v,
+              items: v.items.filter((i) => i.id !== updatedItem.id),
+            };
+          }
+
           if (!exists) {
             if (updatedItem.parent_id === v.id) {
               return { ...v, items: [...v.items, updatedItem] };
@@ -1243,10 +1754,22 @@
         });
 
         itemsCache.forEach((items, key) => {
-          const parts = key.split(":");
-          const idPart = parts[parts.length - 1]; // Last part is id or "root"
-          const cacheFolderId = idPart === "root" ? null : parseInt(idPart);
+          const { root: cacheRoot, folderId: cacheFolderId } =
+            parseCacheKey(key);
+          const rootFilter = cacheRoot === "all" ? "" : cacheRoot;
+          const visibleInCacheRoot =
+            !rootFilter || isPathInRoot(updatedItem.path, rootFilter);
           const hasItem = items.some((i) => i.id === updatedItem.id);
+
+          if (!visibleInCacheRoot) {
+            if (hasItem) {
+              itemsCache.set(
+                key,
+                items.filter((i) => i.id !== updatedItem.id),
+              );
+            }
+            return;
+          }
 
           if (hasItem && updatedItem.parent_id !== cacheFolderId) {
             itemsCache.set(
@@ -1264,8 +1787,9 @@
         });
 
         if (
-          searchResults.length > 0 ||
-          (searchQuery.trim() && currentFolderId === null)
+          visibleInCurrentRoot &&
+          (searchResults.length > 0 ||
+            (searchQuery.trim() && currentFolderId === null))
         ) {
           // Re-run search to handle potential new matches or removals (150ms debounce for bulk)
           clearTimeout(refreshSearchTimeout);
@@ -1307,6 +1831,7 @@
     }, 200);
     return () => {
       unsubscribe();
+      unsubscribeUpdated();
       unsubscribeProgress();
       clearInterval(interval);
     };
@@ -1320,7 +1845,6 @@
       realTotalScanned = 0;
       lastScannedItem = null;
       lastScannedCover = null;
-      lastUpdateTimestamp = 0;
       pendingItems = [];
 
       const startedAt = performance.now();
@@ -1336,7 +1860,7 @@
         // Refresh while UI is visible to avoid grid flash during scan teardown
         try {
           pendingItems = [];
-          await refreshCurrentView();
+          await refreshOpenViewStack();
           await refreshGlobalCount();
         } catch (e) {
           console.error(e);
@@ -1354,7 +1878,6 @@
     realTotalScanned = 0;
     lastScannedItem = null;
     lastScannedCover = null;
-    lastUpdateTimestamp = 0;
     pendingItems = [];
 
     const startedAt = performance.now();
@@ -1370,7 +1893,7 @@
       // Refresh while scan UI is visible
       try {
         pendingItems = [];
-        await refreshCurrentView();
+        await refreshOpenViewStack();
         await refreshGlobalCount();
       } catch (e) {
         console.error(e);
@@ -1381,13 +1904,25 @@
     }
   }
 
-  async function refreshCurrentView() {
-    const key = getCacheKey(currentFolderId);
-    itemsCache.delete(key); // Clear cache
+  async function refreshOpenViewStack() {
+    const snapshot = [...viewStack];
+    if (snapshot.length === 0) {
+      await openFolder(null, "Library", true);
+      return;
+    }
+
     const getItems = window.electronAPI.library.getItems as any;
-    const newItems = await getItems(currentFolderId, selectedRoot);
-    viewStack[activeIndex].items = newItems;
-    itemsCache.set(key, newItems);
+    const refreshed = await Promise.all(
+      snapshot.map(async (view) => {
+        const nextItems = await getItems(view.id, selectedRoot);
+        return { ...view, items: nextItems };
+      }),
+    );
+
+    viewStack = refreshed;
+    for (const view of refreshed) {
+      itemsCache.set(getCacheKey(view.id), view.items);
+    }
   }
 
   // Debounced search effect
@@ -1609,6 +2144,49 @@
     }).length,
   );
   let stabilizedAllIds = $derived(filteredItems.map((i) => i.id));
+  let bulkSelectableIds = $derived(
+    mangaSeriesViewActive ? mlvVisibleChapterIds : stabilizedAllIds,
+  );
+  let selectedMangaFolders = $derived(
+    filteredItems.filter(
+      (item) => item.type === "folder" && selection.has(item.id),
+    ),
+  );
+
+  async function setSelectedMangaPreference(preference: MangaPreference) {
+    const folders = [...selectedMangaFolders];
+    if (folders.length === 0) return;
+
+    const outcomes = await Promise.allSettled(
+      folders.map((folder) => persistItemMangaPreference(folder, preference)),
+    );
+    const failedCount = outcomes.filter(
+      (outcome) =>
+        outcome.status === "rejected" || outcome.value?.success !== true,
+    ).length;
+    const updatedCount = folders.length - failedCount;
+
+    await refreshCurrentViewSilently();
+
+    if (failedCount > 0) {
+      toasts.add(
+        updatedCount > 0
+          ? `Updated ${updatedCount} of ${folders.length} selected folders`
+          : "Failed to update manga recognition",
+        "error",
+      );
+      return;
+    }
+
+    const folderLabel = folders.length === 1 ? "folder" : "folders";
+    if (preference === "force_manga") {
+      toasts.add(`${folders.length} ${folderLabel} set as manga`, "success");
+    } else if (preference === "force_non_manga") {
+      toasts.add(`${folders.length} ${folderLabel} set as non-manga`, "success");
+    } else {
+      toasts.add(`${folders.length} ${folderLabel} set to automatic manga recognition`, "success");
+    }
+  }
 
   function handleSearchFocus() {
     if (searchQuery.trim().length > 0) {
@@ -1650,9 +2228,25 @@
       activeMenuId = null;
     }
   }
+
+  function handleLibraryMouseButtons(e: MouseEvent) {
+    if ($appState.currentView !== "library") return;
+
+    // Cancel a pending folder open before App.svelte handles mouse Back.
+    if (e.button === 3) {
+      cancelPendingNavigation();
+    }
+
+    // Let both side buttons reach App.svelte for chronological history navigation.
+    // Parent-folder Back navigation separately collapses skipped visits.
+  }
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} onclick={handleWindowClick} />
+<svelte:window
+  onkeydowncapture={handleGlobalKeydown}
+  onmousedowncapture={handleLibraryMouseButtons}
+  onclick={handleWindowClick}
+/>
 
 <Dialog
   open={showDeleteDialog}
@@ -1665,7 +2259,6 @@
   onCancel={handleCancelDelete}
 />
 
-<!-- Rename Dialog -->
 <Dialog
   open={showRenameDialog}
   title={renameItem?.type === "folder" ? "Rename Folder" : "Rename File"}
@@ -1695,121 +2288,19 @@
   </div>
 </Dialog>
 
-<!-- Tag Editor Dialog -->
-{#if showTagEditor && tagEditorItemId}
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-default"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) {
-        closeTagEditor();
-      }
-    }}
-    role="button"
-    tabindex="-1"
-    onkeydown={(e) => e.key === "Escape" && closeTagEditor()}
-  >
-    <div
-      class="bg-slate-900 rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col shadow-2xl border border-slate-800 relative overflow-hidden cursor-default"
-      onclick={() => {}}
-      onkeydown={(e) => {
-        if (e.key !== "Escape") {
-          e.stopPropagation();
-        }
-      }}
-      role="dialog"
-      aria-modal="true"
-      tabindex="-1"
-    >
-      <!-- Close Button -->
-      <button
-        class="absolute top-4 right-4 text-slate-500 hover:text-white z-50"
-        onclick={closeTagEditor}
-        aria-label="Close"
-      >
-        <svg
-          class="w-5 h-5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          ><path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M6 18L18 6M6 6l12 12"
-          /></svg
-        >
-      </button>
+<LibraryMetadataDialogs
+  {showTagEditor}
+  {tagEditorItemId}
+  {tagEditorItemTitle}
+  {closeTagEditor}
+  {handleTagChange}
+  {showTypeEditor}
+  {typeEditorItemId}
+  {typeEditorItemTitle}
+  {closeTypeEditor}
+  {handleTypeChange}
+/>
 
-      <div class="p-6 pb-2 shrink-0">
-        <h2 class="text-xl font-bold text-white mb-1">Edit Tags</h2>
-        <p class="text-sm text-slate-400 truncate">{tagEditorItemTitle}</p>
-      </div>
-
-      <div class="flex-1 min-h-0 relative flex flex-col">
-        <TagSelector itemId={tagEditorItemId} onchange={handleTagChange} />
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Type Editor Dialog -->
-{#if showTypeEditor && typeEditorItemId}
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-default"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) {
-        closeTypeEditor();
-      }
-    }}
-    role="button"
-    tabindex="-1"
-    onkeydown={(e) => e.key === "Escape" && closeTypeEditor()}
-  >
-    <div
-      class="bg-slate-900 rounded-2xl w-full max-w-md max-h-[70vh] flex flex-col shadow-2xl border border-slate-800 relative overflow-hidden cursor-default"
-      onclick={() => {}}
-      onkeydown={(e) => {
-        if (e.key !== "Escape") {
-          e.stopPropagation();
-        }
-      }}
-      role="dialog"
-      aria-modal="true"
-      tabindex="-1"
-    >
-      <!-- Close Button -->
-      <button
-        class="absolute top-4 right-4 text-slate-500 hover:text-white z-50"
-        onclick={closeTypeEditor}
-        aria-label="Close"
-      >
-        <svg
-          class="w-5 h-5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          ><path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M6 18L18 6M6 6l12 12"
-          /></svg
-        >
-      </button>
-
-      <div class="p-6 pb-2 shrink-0">
-        <h2 class="text-xl font-bold text-white mb-1">Set Type</h2>
-        <p class="text-sm text-slate-400 truncate">{typeEditorItemTitle}</p>
-      </div>
-
-      <div class="flex-1 min-h-0 relative flex flex-col">
-        <TypeSelector itemId={typeEditorItemId} onchange={handleTypeChange} />
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Create Folder Dialog -->
 {#if showCreateFolderDialog}
   <Dialog
     open={showCreateFolderDialog}
@@ -1846,7 +2337,6 @@
   </Dialog>
 {/if}
 
-<!-- Archive Manager -->
 {#if managingArchiveItem}
   <ArchiveManager
     item={managingArchiveItem}
@@ -1856,9 +2346,12 @@
 
 <BulkSelection
   {selection}
-  allIds={stabilizedAllIds}
+  allIds={bulkSelectableIds}
+  mangaFolders={selectedMangaFolders}
+  {menuCloseEpoch}
   view={$appState?.currentView === "favorites" ? "favorites" : "library"}
   onRefresh={handleBulkRefresh}
+  onSetMangaPreference={setSelectedMangaPreference}
   onMove={() => {
     itemsToMove = items.filter((i) => selection.has(i.id));
     showMoveDialog = true;
@@ -1866,83 +2359,34 @@
 />
 
 {#if isScanning}
-  <!-- Scanning UI (Same as before) -->
-  <div
-    class="h-full relative overflow-hidden flex flex-col items-center justify-center"
-  >
-    <!-- Blurred Background -->
-    <div class="absolute inset-0 z-0">
-      {#if lastScannedCover}
-        <img
-          src={lastScannedCover}
-          alt=""
-          draggable="false"
-          class="w-full h-full object-cover blur-2xl opacity-40 brightness-50 transition-all duration-500"
-        />
-      {/if}
-      <div class="absolute inset-0 bg-slate-900/60"></div>
-    </div>
-
-    <!-- Main Content -->
+  <LibraryScanOverlay {lastScannedCover} {totalScanned} {lastScannedItem} />
+{:else if mangaSeriesViewActive}
+  <div class="flex-1 relative overflow-hidden">
     <div
-      class="relative z-10 flex flex-col items-center gap-6 p-8 w-full max-w-4xl"
+      class="absolute inset-0 overflow-auto p-6 scroll-smooth bg-slate-900"
+      use:dragScroll={{ axis: "y" }}
+      onscroll={() => {
+        menuCloseEpoch += 1;
+      }}
+      data-active-view="true"
     >
-      <!-- Big Cover -->
-      <div
-        class="relative h-[60vh] aspect-[2/3] rounded-lg overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.5)] bg-slate-800"
-      >
-        {#if lastScannedCover}
-          <img
-            src={lastScannedCover}
-            alt="Scanning..."
-            draggable="false"
-            class="w-full h-full object-cover"
-          />
-        {:else}
-          <div
-            class="w-full h-full flex items-center justify-center text-slate-600 bg-slate-800"
-          >
-            <svg
-              class="w-24 h-24 opacity-20"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zm-5-7l-3 3.72M9 11l-3 4h12l-4-5z"
-              />
-            </svg>
-          </div>
-        {/if}
-      </div>
-
-      <!-- Counter & Info -->
-      <div class="text-center space-y-4">
-        <div class="flex flex-col items-center">
-          <span
-            class="text-6xl font-bold text-white drop-shadow-lg tracking-tighter"
-            >{totalScanned}</span
-          >
-          <span
-            class="text-slate-300 font-medium tracking-wide text-lg uppercase opacity-80"
-            >Items Scanned</span
-          >
-        </div>
-
-        {#if lastScannedItem}
-          <p
-            class="text-slate-300 font-mono text-sm max-w-2xl truncate bg-black/30 px-4 py-2 rounded-lg backdrop-blur-sm border border-white/5"
-          >
-            {lastScannedItem.path}
-          </p>
-        {/if}
-      </div>
+      <MangaLibraryView
+        seriesIds={mangaSeriesIdsInCurrentFolder}
+        chapterItems={currentView.items}
+        {gridSize}
+        onBack={handleBackFromMangaSeriesView}
+        chapterActions={mlvChapterActions}
+        selectionContext={mlvSelectionContext}
+        {menuCloseEpoch}
+      />
     </div>
   </div>
+{:else if !hasInitializedRootView}
+  <div class="flex-1 bg-slate-900"></div>
 {:else}
   <header
     class="h-16 bg-slate-900/80 border-b border-slate-700/50 flex items-center justify-between px-6 gap-4 sticky top-0 z-30 backdrop-blur-md"
   >
-    <!-- Left: Navigation (Breadcrumbs) -->
     <!-- Left: Navigation (Breadcrumbs) -->
     <div class="flex items-center gap-3 flex-1 min-w-0">
       {#if viewStack.length > 1}
@@ -1996,7 +2440,6 @@
         {/each}
       </div>
 
-      <!-- Folder Switcher: After title, before count -->
       <FolderSwitcher
         currentRoot={selectedRoot}
         sortOrder={librarySortOrder}
@@ -2024,7 +2467,6 @@
       </span>
     </div>
 
-    <!-- Center: Search Bar -->
     <div class="flex-1 max-w-lg hidden md:block">
       <div class="relative group">
         <svg
@@ -2050,7 +2492,6 @@
           onfocus={handleSearchFocus}
           class="w-full pl-10 pr-10 py-2.5 bg-slate-800/50 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 outline-none ring-0 focus:outline-none focus:bg-slate-800 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-colors duration-200 shadow-sm"
         />
-        <!-- Suggestions Dropdown -->
         {#if showSearchSuggestions}
           <div
             class="absolute top-full left-0 right-0 mt-2 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-50"
@@ -2108,9 +2549,7 @@
       </div>
     </div>
 
-    <!-- Right: Actions -->
     <div class="flex items-center gap-3">
-      <!-- Search Toggle (Mobile) -->
       <button
         class="md:hidden p-2 text-slate-400 hover:text-white"
         aria-label="Toggle search"
@@ -2130,7 +2569,6 @@
         </svg>
       </button>
 
-      <!-- Filter Button -->
       <div class="relative">
         <button
           class="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-800/50 border border-slate-700/50 text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200 {selectedTypeIds.length >
@@ -2227,7 +2665,6 @@
         {/if}
       </div>
 
-      <!-- Grid Size Controls -->
       <div
         class="hidden sm:flex items-center gap-1 bg-slate-800/50 rounded-xl p-1 border border-slate-700/30"
       >
@@ -2358,20 +2795,27 @@
 
   <div class="flex-1 relative overflow-hidden">
     {#each viewStack as view, index (index)}
-      <!-- Use display:none to keep inactive views in DOM but hidden -->
+      {@const isActiveView = index === activeIndex}
+      {@const stackItems = isActiveView ? visibleItems : view.items}
+      <!-- Keep inactive views rendered to avoid repaint flash when returning. -->
       <div
         class="absolute inset-0 overflow-auto p-6 scroll-smooth bg-slate-900"
         use:dragScroll={{ axis: "y" }}
-        use:restoreScroll={view.scrollTop}
         onscroll={(e) => {
           if (activeMenuId !== null) closeMenu();
           if (showTypeFilter) showTypeFilter = false;
           if (showSearchSuggestions) showSearchSuggestions = false;
           // Capture scroll position
           view.scrollTop = (e.target as HTMLElement).scrollTop;
+          if (isActiveView) {
+            menuCloseEpoch += 1;
+            writeFolderViewState(view.id, view.scrollTop, renderLimit);
+          }
         }}
-        style="display: {index === activeIndex ? 'block' : 'none'}"
-        data-active-view={index === activeIndex}
+        style="opacity: {isActiveView ? 1 : 0}; z-index: {isActiveView ? 1 : 0}; pointer-events: {isActiveView ? 'auto' : 'none'};"
+        data-stack-view="true"
+        data-active-view={isActiveView}
+        aria-hidden={isActiveView ? "false" : "true"}
       >
         {#if view.items.length === 0 && !loading}
           <div
@@ -2414,480 +2858,44 @@
           </div>
         {:else}
           <div class="grid {getGridClass()} gap-4 library-grid">
-            {#each visibleItems as item, idx (item.id)}
-              <div
-                role="button"
-                tabindex="0"
-                data-nav-index={idx}
-                data-type={item.type}
-                data-item-id={item.id}
-                class="flex flex-col group relative rounded-xl transition-[transform,shadow,border-color] duration-300 hover:scale-[1.02] hover:shadow-2xl hover:shadow-blue-500/10 text-left cursor-pointer bg-slate-900 border border-slate-700/50 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 select-none outline-none ring-0 overflow-hidden {item.type ===
-                'folder'
-                  ? 'hover:border-amber-500/50 hover:shadow-amber-500/10'
-                  : 'hover:border-blue-500/50 hover:shadow-blue-500/10'}"
-                in:fly|local={{
-                  y: skipItemAnimation ? 0 : 10,
-                  duration: skipItemAnimation ? 0 : 300,
+            {#each stackItems as item, idx (item.id)}
+              <LibraryGridItem
+                {item}
+                {idx}
+                {isActiveView}
+                {skipItemAnimation}
+                {selection}
+                filteredItems={filteredItems}
+                activeMenuId={activeMenuId}
+                {blurR18}
+                {blurR18Hover}
+                blurR18Intensity={blurR18Intensity}
+                currentFolderId={currentFolderId}
+                searchQuery={searchQuery}
+                getCoverSrc={getCoverSrc}
+                getStatusColor={getStatusColor}
+                getStatusLabel={getStatusLabel}
+                getReadingProgress={getReadingProgress}
+                getBreadcrumbPath={getBreadcrumbPath}
+                getLanguageCodes={getLanguageCodes}
+                onItemClick={handleItemClick}
+                onToggleFavorite={toggleFavorite}
+                onToggleMenu={toggleMenu}
+                onCloseMenu={closeMenu}
+                onOpenTagEditor={openTagEditor}
+                onOpenTypeEditor={openTypeEditor}
+                onSetMangaPreference={setItemMangaPreference}
+                onManageArchive={(selectedItem) => {
+                  managingArchiveItem = selectedItem;
                 }}
-                style="content-visibility: auto;"
-                onclick={(e: MouseEvent) => handleItemClick(item, e)}
-                onmousedown={(e: MouseEvent) =>
-                  e.shiftKey && e.preventDefault()}
-                ondblclick={(e: MouseEvent) => handleItemClick(item, e)}
-                onkeydown={(e: KeyboardEvent) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    handleItemClick(item, e);
-                  }
+                onMoveItem={(selectedItem) => {
+                  itemsToMove = [selectedItem];
+                  showMoveDialog = true;
                 }}
-              >
-                <!-- Selection Overlay -->
-                {#if selection.selectionMode || selection.has(item.id)}
-                  <div
-                    class="absolute inset-0 z-40 rounded-xl transition-all duration-200 pointer-events-none {selection.has(
-                      item.id,
-                    )
-                      ? 'bg-blue-500/10 border-2 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.2)]'
-                      : 'bg-blue-500/0 border-0'}"
-                    onclick={(e: MouseEvent) =>
-                      selection.toggle(item.id, filteredItems, e)}
-                    onkeydown={(e: KeyboardEvent) =>
-                      e.key === "Enter" &&
-                      selection.toggle(item.id, filteredItems, e)}
-                    role="button"
-                    tabindex="0"
-                    aria-label="Toggle selection"
-                  >
-                    <div class="absolute top-2 left-2 p-1">
-                      <div
-                        class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-200 {selection.has(
-                          item.id,
-                        )
-                          ? 'bg-blue-500 border-blue-500'
-                          : 'bg-black/40 border-slate-400 group-hover:border-blue-400'}"
-                      >
-                        {#if selection.has(item.id)}
-                          <svg
-                            class="w-4 h-4 text-white"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="3"
-                              d="M5 13l4 4L19 7"
-                            />
-                          </svg>
-                        {/if}
-                      </div>
-                    </div>
-                  </div>
-                {/if}
-                {#if item.type === "book"}
-                  <button
-                    aria-label={item.is_favorite
-                      ? "Remove from favorites"
-                      : "Add to favorites"}
-                    class="absolute top-2 right-2 z-20 p-1.5 rounded-full transition-all duration-200 {item.is_favorite
-                      ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/50'
-                      : 'bg-black/40 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-rose-400 hover:bg-black/60'}"
-                    onclick={(e) => toggleFavorite(item, e)}
-                  >
-                    <svg
-                      class="w-4 h-4"
-                      fill={item.is_favorite ? "currentColor" : "none"}
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
-                      />
-                    </svg>
-                  </button>
-                {/if}
-
-                <div
-                  class="absolute top-2 left-2 {activeMenuId === item.id
-                    ? 'z-[70]'
-                    : 'z-20'}"
-                >
-                  <button
-                    aria-label="Options"
-                    class="p-1.5 rounded-full transition-all duration-200 {activeMenuId ===
-                    item.id
-                      ? 'bg-black/60 text-white opacity-100'
-                      : 'bg-black/40 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-white hover:bg-black/60'}"
-                    onclick={(e) => toggleMenu(item.id, e)}
-                  >
-                    <svg
-                      class="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
-                      />
-                    </svg>
-                  </button>
-
-                  {#if activeMenuId === item.id}
-                    <div
-                      class="absolute left-0 top-full mt-1 w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden text-left"
-                      role="menu"
-                      tabindex="-1"
-                      onclick={(e) => e.stopPropagation()}
-                      onkeydown={(e) => e.stopPropagation()}
-                      transition:fade={{ duration: 100 }}
-                    >
-                      <div class="p-1">
-                        <button
-                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                          onclick={(e) => {
-                            closeMenu();
-                            openTagEditor(item, e);
-                          }}
-                        >
-                          <svg
-                            class="w-4 h-4 text-sky-400 opacity-80"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                            ><path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-                            /></svg
-                          >
-                          Edit Tags
-                        </button>
-
-                        <button
-                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                          onclick={(e) => {
-                            closeMenu();
-                            openTypeEditor(item, e);
-                          }}
-                        >
-                          <svg
-                            class="w-4 h-4 text-sky-400 opacity-80"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                            ><path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                            /></svg
-                          >
-                          Set Type
-                        </button>
-                        {#if item.type === "book"}
-                          <button
-                            class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                            onclick={(e) => {
-                              closeMenu();
-                              managingArchiveItem = item;
-                            }}
-                          >
-                            <svg
-                              class="w-4 h-4 text-sky-400 opacity-80"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                              ><path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                              /></svg
-                            >
-                            Manage Content
-                          </button>
-                        {/if}
-
-                        <button
-                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                          onclick={(e) => {
-                            closeMenu();
-                            itemsToMove = [item];
-                            showMoveDialog = true;
-                          }}
-                        >
-                          <svg
-                            class="w-4 h-4 text-sky-400 opacity-80"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
-                            />
-                          </svg>
-                          Move Item
-                        </button>
-
-                        <button
-                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                          onclick={(e) => {
-                            closeMenu();
-                            openRenameDialog(item);
-                          }}
-                        >
-                          <svg
-                            class="w-4 h-4 text-sky-400 opacity-80"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                            />
-                          </svg>
-                          Rename
-                        </button>
-
-                        <button
-                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                          onclick={(e) => {
-                            closeMenu();
-                            handleShowInFolder(item);
-                          }}
-                        >
-                          <svg
-                            class="w-4 h-4 text-sky-400 opacity-80"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"
-                            />
-                          </svg>
-                          Open Location
-                        </button>
-
-                        <button
-                          class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
-                          onclick={(e) => {
-                            closeMenu();
-                            deleteItem(item, e);
-                          }}
-                        >
-                          <svg
-                            class="w-4 h-4 text-rose-500 opacity-90"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                            ><path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                            /></svg
-                          >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-
-                <div
-                  class="aspect-[2/3] bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center relative overflow-hidden rounded-t-xl"
-                >
-                  <div
-                    class="absolute top-0 left-0 z-10 flex flex-col gap-1 items-start"
-                  >
-                    {#if item.type === "folder"}
-                      <div
-                        class="absolute top-2 left-2 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200 bg-amber-600 rounded-full shadow-lg"
-                      >
-                        Folder
-                      </div>
-                    {:else if item.reading_status !== "unread"}
-                      <div
-                        class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white {getStatusColor(
-                          item.reading_status,
-                        )} rounded-br-lg shadow-lg"
-                      >
-                        {getStatusLabel(item.reading_status)}
-                      </div>
-                    {/if}
-                  </div>
-
-                  {#if item.types_list?.toLowerCase().includes("r18")}
-                    <div
-                      class="absolute bottom-0 right-0 z-20 flex flex-col gap-1 items-end"
-                    >
-                      <div
-                        class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white bg-red-600 rounded-tl-lg shadow-lg"
-                      >
-                        R18
-                      </div>
-                    </div>
-                  {/if}
-                  {#if item.type !== "folder"}
-                    <div
-                      class="absolute bottom-2 left-2 z-10 flex flex-col gap-1 items-start"
-                    >
-                      {#each getLanguageCodes(item.tags_list) as code}
-                        <div
-                          class="px-1.5 py-0.5 text-[9px] font-bold bg-black/60 text-white rounded backdrop-blur-md border border-white/10 shadow-sm"
-                        >
-                          {code}
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if item.cover_path}
-                    <img
-                      src={`media:///${item.cover_path.replace(/\\/g, "/")}${item._coverVersion ? `?v=${item._coverVersion}` : ""}`}
-                      alt={item.title}
-                      draggable="false"
-                      loading="eager"
-                      style="--r18-blur: {blurR18Intensity}px"
-                      class="w-full h-full object-cover transition-all duration-300 group-hover:scale-105 {item.types_list
-                        ?.toLowerCase()
-                        .includes('r18') && blurR18
-                        ? `blur-[var(--r18-blur)] ${blurR18Hover ? 'group-hover:blur-0' : ''}`
-                        : ''}"
-                    />
-                  {:else}
-                    <!-- Placeholder -->
-                    <div
-                      class="flex flex-col items-center gap-2 text-slate-500"
-                    >
-                      {#if item.type === "folder"}
-                        <svg
-                          class="w-16 h-16 text-amber-500/80 drop-shadow-lg"
-                          fill="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            d="M19.5 21a2.5 2.5 0 0 0 2.5-2.5v-10a2.5 2.5 0 0 0-2.5-2.5h-5.83l-1.38-2.76A2.5 2.5 0 0 0 10.05 1H4.5A2.5 2.5 0 0 0 2 3.5v15A2.5 2.5 0 0 0 4.5 21h15z"
-                            opacity="0.4"
-                          />
-                          <path
-                            d="M21 9H3v9.5A2.5 2.5 0 0 0 5.5 21h13a2.5 2.5 0 0 0 2.5-2.5V9z"
-                          />
-                        </svg>
-                      {:else}
-                        <svg
-                          class="w-14 h-14 text-slate-600"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="1"
-                            d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
-                          />
-                        </svg>
-                      {/if}
-                    </div>
-                  {/if}
-
-                  {#if item.type === "book" && item.current_page > 0 && item.page_count > 0}
-                    <div
-                      class="absolute bottom-0 left-0 right-0 h-1 bg-black/50"
-                    >
-                      <div
-                        class="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-300"
-                        style="width: {getReadingProgress(item)}%"
-                      ></div>
-                    </div>
-                  {/if}
-                </div>
-
-                <div class="p-3 bg-slate-800 rounded-b-xl flex-1 flex flex-col">
-                  <p
-                    class="text-sm font-medium text-white truncate {item.type ===
-                    'folder'
-                      ? 'group-hover:text-amber-400'
-                      : 'group-hover:text-blue-400'} transition-colors"
-                    title={item.title}
-                  >
-                    {item.title || "Untitled"}
-                  </p>
-
-                  {#if item.types_list}
-                    {@const displayTypes = item.types_list
-                      .split(",")
-                      .filter((t) => t.trim().toLowerCase() !== "r18")}
-                    {#if displayTypes.length > 0}
-                      <div class="flex flex-wrap gap-1 mt-2 mb-1">
-                        {#each displayTypes as type}
-                          <span
-                            class="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-300 bg-slate-700/50 rounded border border-slate-600/50"
-                          >
-                            {type}
-                          </span>
-                        {/each}
-                      </div>
-                    {/if}
-                  {/if}
-
-                  {#if currentFolderId === null && searchQuery}
-                    <div
-                      class="flex items-center gap-1.5 mt-1.5 text-xs text-slate-500 mb-1"
-                    >
-                      <svg
-                        class="w-3.5 h-3.5 flex-shrink-0 opacity-70"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                        />
-                      </svg>
-                      <span class="truncate opacity-80">
-                        {getBreadcrumbPath(item)}
-                      </span>
-                    </div>
-                  {/if}
-
-                  <div class="flex items-center justify-between mt-auto pt-1.5">
-                    <p class="text-xs text-slate-500">
-                      {#if item.type === "folder"}
-                        Folder
-                      {:else}
-                        {item.page_count || 0} pages
-                      {/if}
-                    </p>
-                    {#if item.type === "book" && item.current_page > 0}
-                      <p class="text-xs text-blue-400 font-medium">
-                        p.{item.current_page + 1}
-                      </p>
-                    {/if}
-                  </div>
-                </div>
-              </div>
+                onOpenRename={openRenameDialog}
+                onShowInFolder={handleShowInFolder}
+                onDeleteItem={deleteItem}
+              />
             {/each}
           </div>
 
@@ -2943,21 +2951,6 @@
   :global(*:focus),
   :global(*:focus-visible) {
     outline: none !important;
-  }
-
-  /* High-visibility selector for Grid Items (Keyboard Only) */
-  [role="button"]:focus-visible {
-    outline: 2px solid #3b82f6 !important;
-    outline-offset: 2px !important;
-    box-shadow: 0 0 15px rgba(59, 130, 246, 0.4) !important;
-    z-index: 60;
-  }
-
-  /* Folders get an amber selector (Keyboard Only) */
-  [role="button"][data-type="folder"]:focus-visible {
-    outline: 2px solid #f59e0b !important;
-    box-shadow: 0 0 15px rgba(245, 158, 11, 0.4) !important;
-    z-index: 60;
   }
 
   :global(input:focus),

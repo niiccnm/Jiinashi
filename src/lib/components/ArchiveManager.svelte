@@ -208,7 +208,11 @@
       // Actually Reader filters hidden pages, so it might jump to the next one.
       // Let's just calculate visible index.
 
-      window.electronAPI.reader.openWindow(item.id, visibleIndex);
+      window.electronAPI.reader.openWindow(
+        item.id,
+        visibleIndex,
+        item.manga_series_id ?? null,
+      );
     }
   }
 

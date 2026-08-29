@@ -1,50 +1,56 @@
-import { BrowserWindow, Event } from "electron";
+import { BrowserWindow } from "electron";
+import type { Event } from "electron";
 import path from "path";
 import { CLIENT_HINTS, USER_AGENT } from "./constants";
 import { preSeedCookies, syncCookies } from "./cookies";
 
-/**
- * Fallback: Spawns hidden window to bypass Cloudflare/TLS checks.
- * Emulates real user interaction and synchronizes successful cookies.
- */
+type HiddenWindowOptions = {
+  timeoutMs?: number;
+  escalationDelayMs?: number;
+  escalateToVisible?: boolean;
+};
+
+/** Opens a browser-backed request when an ordinary HTTP request is challenged. */
 export async function fetchWithHiddenWindow(
   url: string,
   referer?: string,
   retries = 0,
   checkCancel?: () => boolean,
+  options?: HiddenWindowOptions,
 ): Promise<string> {
   return new Promise(async (resolve, reject) => {
     if (checkCancel?.()) return reject(new Error("Cancelled"));
+    void retries;
 
-    // Determine partition
-    let partition = "persist:solver_default";
-    if (url.includes("nhentai.net")) partition = "persist:solver_nhentai";
-    else if (url.includes("e-hentai.org")) partition = "persist:solver_ehentai";
-    else if (url.includes("exhentai.org"))
-      partition = "persist:solver_exhentai";
-
-    const isNH = url.includes("nhentai.net");
+    const isPrimaryGallery = url.includes("nhentai.net");
+    const partition = isPrimaryGallery
+      ? "persist:solver_nhentai"
+      : url.includes("e-hentai.org")
+        ? "persist:solver_ehentai"
+        : url.includes("exhentai.org")
+          ? "persist:solver_exhentai"
+          : "persist:solver_default";
+    const timeoutMs = Math.max(5000, Number(options?.timeoutMs || 180000));
+    const escalationDelayMs = Math.max(1000, Number(options?.escalationDelayMs || 1500));
+    const shouldEscalate = options?.escalateToVisible ?? isPrimaryGallery;
     await preSeedCookies(partition, url);
 
     const win = new BrowserWindow({
       width: 1200,
       height: 800,
-      show: isNH,
-      x: isNH ? undefined : -2000,
-      y: isNH ? undefined : -2000,
+      show: false,
       webPreferences: {
-        offscreen: false,
         partition,
         nodeIntegration: false,
         contextIsolation: true,
-        preload: path.join(__dirname, "..", "parsers", "stealth_preload.js"), // Fixed path
+        preload: path.join(__dirname, "stealth_preload.js"),
         backgroundThrottling: false,
       },
     });
+    if (isPrimaryGallery) win.center();
 
-    if (isNH) win.center();
-
-    // Natural Focus
+    // Preserve the user-like focus/input behavior used by the original
+    // doujinshi verification window when it becomes visible.
     win.on("show", () => {
       setTimeout(() => {
         if (!win.isDestroyed()) {
@@ -54,166 +60,94 @@ export async function fetchWithHiddenWindow(
       }, 500);
     });
 
-    // Headers & Spoofing
     win.webContents.setUserAgent(USER_AGENT);
-    win.webContents.session.webRequest.onBeforeSendHeaders((details, cb) => {
+    win.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
       details.requestHeaders["User-Agent"] = USER_AGENT;
       Object.assign(details.requestHeaders, CLIENT_HINTS);
-      cb({ cancel: false, requestHeaders: details.requestHeaders });
+      callback({ cancel: false, requestHeaders: details.requestHeaders });
     });
 
-    // Timeout & Cleanup
-    let timeoutInt: NodeJS.Timeout;
-    let escalationInt: NodeJS.Timeout;
-
-    const cleanup = () => {
-      clearTimeout(timeoutInt);
-      clearTimeout(escalationInt);
-      if ((global as any)._sweepInt) clearInterval((global as any)._sweepInt);
+    let settled = false;
+    let sweep: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (sweep) clearInterval(sweep);
+      clearTimeout(timeout);
+      clearTimeout(escalation);
       if (!win.isDestroyed()) win.destroy();
     };
-
-    timeoutInt = setTimeout(() => {
-      cleanup();
-      reject(new Error("Timeout (180s)"));
-    }, 180000);
-
-    // Escalation (Show window if stuck)
-    escalationInt = setTimeout(() => {
-      if (win && !win.isDestroyed() && isNH) {
-        console.log("[Fallback] Escalating to visible manual mode...");
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      reject(error);
+    };
+    const timeout = setTimeout(
+      () => fail(new Error(`Timeout (${Math.round(timeoutMs / 1000)}s)`)),
+      timeoutMs,
+    );
+    const escalation = setTimeout(() => {
+      if (!win.isDestroyed() && shouldEscalate) {
         win.show();
         win.focus();
+        win.center();
       }
-    }, 1500);
+    }, escalationDelayMs);
 
-    // Page Check Logic
-    const checkPage = async (source: string) => {
-      if (win.isDestroyed()) return;
-      if (checkCancel?.()) {
-        cleanup();
-        return reject(new Error("Cancelled"));
-      }
-
+    const checkPage = async () => {
+      if (settled || win.isDestroyed()) return;
+      if (checkCancel?.()) return fail(new Error("Cancelled"));
       try {
         const currentUrl = win.webContents.getURL();
-        const title = win.webContents.getTitle();
         if (!currentUrl || currentUrl === "about:blank") return;
-
-        const bodySnippet = await win.webContents
-          .executeJavaScript(
-            "document.body.innerText.substring(0, 50).toLowerCase()",
-          )
-          .catch(() => "");
-        const isChallenge =
-          title.includes("Just a moment") ||
-          title.includes("Cloudflare") ||
-          title.includes("Please Wait") ||
-          title.includes("Checking") ||
-          currentUrl.includes("waiting") ||
-          bodySnippet.includes("verify") ||
-          bodySnippet.includes("human") ||
-          bodySnippet.includes("checking");
-
+        const state = await win.webContents.executeJavaScript(`(() => {
+          const text = (document.body?.innerText || '').trim();
+          const title = document.title || '';
+          const challenged = /just a moment|cloudflare|please wait|checking/i.test(title) ||
+            /verify|human|checking/i.test(text.slice(0, 80)) ||
+            location.href.includes('waiting');
+          const ready = Boolean(
+            document.querySelector('#info, #gallery_id, #image-container, .reader-container, #i1, #gdt, .gm, .main-header, ul.pagination, div.gallery, #gn, #gd1') ||
+            document.documentElement.innerHTML.includes('JSON.parse("') ||
+            text.startsWith('{') || text.startsWith('[') ||
+            document.contentType.includes('xml')
+          );
+          return { challenged, ready };
+        })()`);
         const rootDomain = new URL(url).hostname.split(".").slice(-2).join(".");
         const cookies = await win.webContents.session.cookies.get({});
-        const hasAuthCookie =
-          rootDomain === "exhentai.org"
-            ? cookies.some(
-                (c) => c.name === "igneous" && c.domain?.includes(rootDomain),
-              )
-            : cookies.some(
-                (c) =>
-                  c.name === "cf_clearance" && c.domain?.includes(rootDomain),
-              );
+        const hasSession = cookies.some((cookie) =>
+          ["cf_clearance", "igneous"].includes(cookie.name) &&
+          cookie.domain?.includes(rootDomain),
+        );
+        if (!state.ready && !hasSession) return;
+        if (state.challenged && !hasSession) return;
 
-        // Comprehensive Check Content
-        const isContentReady = await win.webContents
-          .executeJavaScript(
-            `
-                !!(document.querySelector("#info, #gallery_id, #image-container, .reader-container, #i1, #gdt, .gm, .main-header, ul.pagination, div.gallery") || 
-                   document.documentElement.innerHTML.includes('JSON.parse("') ||
-                   !!(document.querySelector('#gn') || document.querySelector('#gd1')))
-            `,
-          )
-          .catch(() => false);
-
-        if ((isContentReady || hasAuthCookie) && !isChallenge) {
-          console.log(`[Fallback] Success! (${source})`);
-
-          // Final Settlement
-          if (hasAuthCookie) await syncCookies(partition, "." + rootDomain);
-
-          // Allow JS to settle before extract
-          await new Promise((r) => setTimeout(r, 1500));
-
-          if (win.isDestroyed()) return;
-          const html = await win.webContents.executeJavaScript(
-            "document.documentElement.outerHTML",
-          );
-          cleanup();
-          resolve(html);
-          return;
-        }
-
-        // Auto-solve logic (if not visible)
-        if (isChallenge && !win.isVisible()) {
-          // Programmatic interaction (if needed) or just wait for Cloudflare natural pass
-        }
-      } catch (e) {
-        console.error("[Fallback] Check error:", e);
+        settled = true;
+        clearTimeout(escalation);
+        if (hasSession) await syncCookies(partition, `.${rootDomain}`);
+        await new Promise((done) => setTimeout(done, 1500));
+        if (win.isDestroyed()) return;
+        const html = await win.webContents.executeJavaScript(
+          "document.documentElement.outerHTML",
+        );
+        finish();
+        resolve(html);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
       }
     };
 
-    // Background Sweep
-    (global as any)._sweepInt = setInterval(checkPage, 3000, "sweep");
-    win.webContents.on("did-finish-load", () => checkPage("did-finish-load"));
-    win.webContents.on("dom-ready", () => checkPage("dom-ready"));
-
-    // Proactive Failure Handling
+    sweep = setInterval(checkPage, 3000);
+    win.webContents.on("did-finish-load", checkPage);
+    win.webContents.on("dom-ready", checkPage);
     win.webContents.on(
       "did-fail-load",
       (_event: Event, errorCode: number, errorDescription: string) => {
-        if (errorCode === -3) return; // Ignore ABORTED errors
-        cleanup();
-        reject(
-          new Error(
-            `Window failed to load: ${errorDescription} (${errorCode})`,
-          ),
-        );
+        if (errorCode !== -3) {
+          fail(new Error(`Window failed to load: ${errorDescription} (${errorCode})`));
+        }
       },
     );
-
-    win.loadURL(url, { httpReferrer: referer || new URL(url).origin + "/" });
+    win.loadURL(url, { httpReferrer: referer || `${new URL(url).origin}/` });
   });
-}
-
-/** Internal solver helper (kept for potential future use). */
-async function solveChallengeInternally(webContents: any) {
-  try {
-    await webContents.executeJavaScript(`
-      (function() {
-        try {
-          const selectors = [ 'input[type="checkbox"]', '.cf-turnstile-button', '#challenge-stage button', '.ctp-checkbox-label input' ];
-          for (const s of selectors) {
-            const el = document.querySelector(s);
-            if (el && !el.checked) {
-              el.click();
-              el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-              el.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
-              el.dispatchEvent(new MouseEvent('click', {bubbles: true}));
-              break;
-            }
-          }
-          if (!window._jiinashi_wiggle_active) {
-            window._jiinashi_wiggle_active = true;
-            setInterval(() => {
-              if (Math.random() > 0.7) return;
-              window.scrollBy(Math.floor(Math.random()*40)-20, Math.floor(Math.random()*40)-20);
-            }, 800 + Math.random() * 400);
-          }
-        } catch(e) {}
-      })()
-    `);
-  } catch (e) {}
 }

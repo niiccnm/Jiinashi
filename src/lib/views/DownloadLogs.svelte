@@ -1,25 +1,79 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import type {
+    DownloaderQueueItem,
+    MangaQueueItem,
+  } from "../../../electron/preload/types";
 
   let taskId = $state<number | null>(null);
-  let task = $state<any>(null);
+  type QueueTask = DownloaderQueueItem | MangaQueueItem;
+  let task = $state<QueueTask | null>(null);
   let logs = $state<string[]>([]);
+  let logsSource = $state<"doujinshi" | "manga">("doujinshi");
 
   let unsubscribe: (() => void) | null = null;
+  let unsubscribeManga: (() => void) | null = null;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   let showCopiedFeedback = $state(false);
+  let latestDoujinshiQueue: DownloaderQueueItem[] = [];
+  let latestMangaQueue: MangaQueueItem[] = [];
 
-  function updateFromQueue(queue: any[]) {
+  function updateFromQueues() {
     if (taskId === null) return;
-    task = queue.find((t: any) => t.id === taskId) || null;
+
+    const mangaTask = latestMangaQueue.find((t) => t.id === taskId) || null;
+    if (mangaTask) {
+      task = mangaTask;
+      logsSource = "manga";
+      return;
+    }
+
+    const doujinshiTask =
+      latestDoujinshiQueue.find((t) => t.id === taskId) || null;
+    if (doujinshiTask) {
+      task = doujinshiTask;
+      logsSource = "doujinshi";
+    }
   }
 
   async function refreshLogs() {
     if (taskId === null) return;
     try {
-      // @ts-ignore
-      logs = await window.electronAPI.downloader.getTaskLogs(taskId);
+      const [mangaLogs, doujinshiLogs] = await Promise.all([
+        window.electronAPI.manga.getDownloadLogs(taskId).catch(() => []),
+        window.electronAPI.downloader.getTaskLogs(taskId).catch(() => []),
+      ]);
+
+      const hasMangaTask = latestMangaQueue.some((t) => t.id === taskId);
+      const hasDoujinshiTask = latestDoujinshiQueue.some((t) => t.id === taskId);
+
+      if (hasMangaTask && !hasDoujinshiTask) {
+        logsSource = "manga";
+        logs = mangaLogs;
+        return;
+      }
+
+      if (hasDoujinshiTask && !hasMangaTask) {
+        logsSource = "doujinshi";
+        logs = doujinshiLogs;
+        return;
+      }
+
+      if (mangaLogs.length > doujinshiLogs.length) {
+        logsSource = "manga";
+        logs = mangaLogs;
+        return;
+      }
+
+      if (doujinshiLogs.length > mangaLogs.length) {
+        logsSource = "doujinshi";
+        logs = doujinshiLogs;
+        return;
+      }
+
+      logs = logsSource === "manga" ? mangaLogs : doujinshiLogs;
     } catch (e) {
       logs = [];
     }
@@ -47,30 +101,59 @@
     taskId = tid ? parseInt(tid, 10) : null;
 
     try {
-      // @ts-ignore
-      const queue = await window.electronAPI.downloader.getQueue();
-      updateFromQueue(queue);
+      const [doujinshiQueue, mangaQueue] = await Promise.all([
+        window.electronAPI.downloader.getQueue(),
+        window.electronAPI.manga.getDownloadQueue(),
+      ]);
+      latestDoujinshiQueue = Array.isArray(doujinshiQueue) ? doujinshiQueue : [];
+      latestMangaQueue = Array.isArray(mangaQueue) ? mangaQueue : [];
+      updateFromQueues();
     } catch (e) {}
 
     await refreshLogs();
 
-    // @ts-ignore
-    unsubscribe = window.electronAPI.downloader.onQueueUpdate((q: any[]) => {
-      updateFromQueue(q);
+    unsubscribe = window.electronAPI.downloader.onQueueUpdate(
+      (q: DownloaderQueueItem[]) => {
+        latestDoujinshiQueue = Array.isArray(q) ? q : [];
+        updateFromQueues();
 
-      if (refreshTimer) return;
-      refreshTimer = setTimeout(() => {
-        refreshTimer = null;
-        refreshLogs();
-      }, 200);
-    });
+        if (refreshTimer) return;
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          refreshLogs();
+        }, 200);
+      },
+    );
+
+    unsubscribeManga = window.electronAPI.manga.onDownloaderProgress(
+      (q: MangaQueueItem[]) => {
+        latestMangaQueue = Array.isArray(q) ? q : [];
+        updateFromQueues();
+
+        if (refreshTimer) return;
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          refreshLogs();
+        }, 200);
+      },
+    );
+
+    // Safety net for auxiliary windows where event delivery can occasionally lag.
+    pollTimer = setInterval(() => {
+      refreshLogs();
+    }, 1000);
   });
 
   onDestroy(() => {
     if (unsubscribe) unsubscribe();
+    if (unsubscribeManga) unsubscribeManga();
     if (refreshTimer) {
       clearTimeout(refreshTimer);
       refreshTimer = null;
+    }
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
   });
 </script>

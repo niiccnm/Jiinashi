@@ -3,6 +3,17 @@ import path from "path";
 import fs from "fs";
 import sharp from "sharp";
 
+export function isPathInside(candidatePath: string, targetPath: string) {
+  const relative = path.relative(
+    path.resolve(targetPath),
+    path.resolve(candidatePath),
+  );
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
 /**
  * Normalizes a URL to a standard format
  */

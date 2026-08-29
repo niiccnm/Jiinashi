@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Dialog from "../components/Dialog.svelte";
+  import type { UpdateStatusPayload } from "../../../electron/preload/types";
 
   interface Props {
     open: boolean;
@@ -41,7 +42,7 @@
   onMount(() => {
     // Subscribe to update status
     const unsubscribe = window.electronAPI.update.onStatusChange(
-      (status: any) => {
+      (status: UpdateStatusPayload) => {
         console.log("[About] Received update status:", status);
         updateStatus = status.status;
         if (status.status === "available") {

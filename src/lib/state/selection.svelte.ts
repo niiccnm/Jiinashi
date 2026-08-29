@@ -4,19 +4,31 @@ export interface SelectionItem {
   id: number;
 }
 
+export function handleSelectionMouseDown(
+  event: MouseEvent,
+  selectionMode: boolean,
+) {
+  if (!selectionMode && !event.ctrlKey && !event.metaKey && !event.shiftKey) return;
+
+  event.preventDefault();
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+}
+
 export class SelectionModel {
   selectedIds = new SvelteSet<number>();
   selectionMode = $state(false);
-  private lastSelectedId: number | null = null;
+  private rangeAnchorId: number | null = null;
 
   toggle(id: number, allItems: SelectionItem[], event?: Event) {
     if (event) event.stopPropagation();
 
     // Range selection (Shift-click)
-    if (event instanceof MouseEvent && event.shiftKey && this.lastSelectedId !== null) {
+    if (event instanceof MouseEvent && event.shiftKey && this.rangeAnchorId !== null) {
       event.preventDefault();
       const currentIdx = allItems.findIndex(i => i.id === id);
-      const lastIdx = allItems.findIndex(i => i.id === this.lastSelectedId);
+      const lastIdx = allItems.findIndex(i => i.id === this.rangeAnchorId);
       
       if (currentIdx !== -1 && lastIdx !== -1) {
         const start = Math.min(currentIdx, lastIdx);
@@ -25,7 +37,7 @@ export class SelectionModel {
           this.selectedIds.add(allItems[i].id);
         }
         this.selectionMode = true;
-        this.lastSelectedId = id;
+        this.rangeAnchorId = id;
         return;
       }
     }
@@ -35,12 +47,14 @@ export class SelectionModel {
       this.selectedIds.delete(id);
       if (this.selectedIds.size === 0) {
         this.selectionMode = false;
-        this.lastSelectedId = null;
+        this.rangeAnchorId = null;
       }
     } else {
       this.selectedIds.add(id);
+      if (!this.selectionMode || this.rangeAnchorId === null) {
+        this.rangeAnchorId = id;
+      }
       this.selectionMode = true;
-      this.lastSelectedId = id;
     }
   }
 
@@ -54,7 +68,7 @@ export class SelectionModel {
   clear() {
     this.selectedIds.clear();
     this.selectionMode = false;
-    this.lastSelectedId = null;
+    this.rangeAnchorId = null;
   }
 
   get size() {

@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { openLibrary } from "../stores/app";
+  import type { ReaderBootstrapOverrides } from "../utils/manga";
 
   // Components
   import ReaderOverlay from "../components/Reader/ReaderOverlay.svelte";
@@ -21,24 +22,59 @@
     is_favorite: boolean;
     reading_status: "unread" | "reading" | "read";
     current_page: number;
+    current_page_offset?: number;
     last_read_at: string | null;
     added_at: string;
+    readerInit?: ReaderBootstrapOverrides | null;
   }
 
   interface Props {
     book: LibraryItem;
   }
 
+  type WebtoonPosition = {
+    pageIndex: number;
+    pageOffset: number;
+  };
+
+  type WebtoonZoomAnchor = {
+    target: HTMLElement;
+    clientX: number;
+    clientY: number;
+    relativeX: number;
+    relativeY: number;
+  };
+
+  type WebtoonCanvasHandle = {
+    capturePosition: () => WebtoonPosition;
+    jumpToPosition: (index: number, pageOffset?: number) => Promise<void>;
+    captureZoomAnchor: (
+      clientX: number,
+      clientY: number,
+    ) => WebtoonZoomAnchor | null;
+    restoreZoomAnchor: (
+      anchor: WebtoonZoomAnchor,
+      centerHorizontally?: boolean,
+    ) => Promise<void>;
+    centerZoomHorizontally: () => Promise<void>;
+    prepareVisibleFrame: () => Promise<void>;
+  };
+
+  type FitMode = "width" | "height" | "contain" | "fill";
+  type WebtoonFitMode = "width" | "contain";
+
   let { book }: Props = $props();
 
   // --- State ---
   let currentPage = $state(0);
+  let currentPageOffset = $state(0);
   let totalPages = $state(0);
   let lastNavigationFromPage = $state(0);
 
   // Settings
   let viewMode = $state<"single" | "double" | "webtoon">("single");
-  let fitMode = $state<"width" | "height" | "contain" | "fill">("contain");
+  let fitMode = $state<FitMode>("contain");
+  let webtoonFitMode = $state<WebtoonFitMode>("contain");
   let mangaMode = $state(true);
   let brightness = $state(100);
   let contrast = $state(100);
@@ -81,6 +117,7 @@
 
   let transformTargetEl: HTMLElement | null = $state(null);
   let viewportEl: HTMLElement | null = $state(null);
+  let webtoonCanvasRef: WebtoonCanvasHandle | null = $state(null);
 
   let targetZoomLevel = $state(100);
   let targetPanX = $state(0);
@@ -101,12 +138,22 @@
   let hasWindowResized = false; // Renamed from initialResizeDone to avoid conflict
   let lastAutoResizeMode = $state<"single" | "double" | "webtoon" | null>(null);
   let windowShown = false; // Track if we have shown the window
+  let pendingInitialWebtoonShow = $state(false);
   let isFullscreen = $state(false); // Track full screen state
   let isFullscreenTransitioning = $state(false);
+  let isEnteringFullscreen = $state(false);
   let fullscreenTransitionRafId1 = 0;
   let fullscreenTransitionRafId2 = 0;
+  let fullscreenTransitionNonce = 0;
   let fullscreenTransitionTimeout: any;
   let cleanupFullscreenListener: (() => void) | undefined;
+  let fullscreenWebtoonPosition: WebtoonPosition | null = null;
+  let webtoonProgressSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastSubmittedWebtoonPage = -1;
+  let readerProgressFlushed = false;
+  let displayedFitMode = $derived(
+    viewMode === "webtoon" ? webtoonFitMode : fitMode,
+  );
 
   // --- Context Menu State ---
   let contextMenu = $state({
@@ -125,27 +172,15 @@
   function handleDomFullscreenChange() {
     if (hasElectronFullscreenApi()) return;
     isFullscreen = Boolean(document.fullscreenElement);
-
-    isFullscreenTransitioning = true;
-    clearTimeout(fullscreenTransitionTimeout);
-    if (fullscreenTransitionRafId1)
-      cancelAnimationFrame(fullscreenTransitionRafId1);
-    if (fullscreenTransitionRafId2)
-      cancelAnimationFrame(fullscreenTransitionRafId2);
-
-    fullscreenTransitionRafId1 = requestAnimationFrame(() => {
-      fullscreenTransitionRafId2 = requestAnimationFrame(() => {
-        isFullscreenTransitioning = false;
-        fullscreenTransitionRafId1 = 0;
-        fullscreenTransitionRafId2 = 0;
-      });
-    });
+    queueFullscreenTransitionSettle();
   }
 
   async function toggleFullscreenSafe() {
     try {
       if (hasElectronFullscreenApi()) {
-        (window as any).electronAPI.reader.toggleFullscreen();
+        await (window as any).electronAPI.reader.toggleFullscreen(
+          viewMode === "webtoon",
+        );
         return;
       }
 
@@ -175,10 +210,95 @@
   let targetLoadIndex: number | null = null;
   let currentLoadingIndex: number | null = null;
 
-  function showReaderWindow() {
+  async function showReaderWindow() {
     if (windowShown) return;
     windowShown = true;
-    window.electronAPI.reader.showWindow();
+    await window.electronAPI.reader.showWindow(true);
+    try {
+      if (viewMode === "webtoon") {
+        await webtoonCanvasRef?.prepareVisibleFrame();
+      } else {
+        await tick();
+        const images =
+          viewportEl?.querySelectorAll<HTMLImageElement>("img");
+        await Promise.all(
+          Array.from(images ?? [], (image) => image.decode().catch(() => undefined)),
+        );
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      }
+    } finally {
+      await window.electronAPI.reader.revealWindow();
+    }
+  }
+
+  function normalizePageOffset(value: number | null | undefined): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.min(1, Math.max(0, parsed));
+  }
+
+  function getReadingStatus(index: number): "reading" | "read" {
+    return index === 0 || index < totalPages - 1 ? "reading" : "read";
+  }
+
+  function getCurrentWebtoonPosition(): WebtoonPosition {
+    return (
+      webtoonCanvasRef?.capturePosition() ?? {
+        pageIndex: currentPage,
+        pageOffset: currentPageOffset,
+      }
+    );
+  }
+
+  function saveWebtoonProgress(
+    position: WebtoonPosition = getCurrentWebtoonPosition(),
+  ) {
+    const { pageIndex, pageOffset } = position;
+    const normalizedOffset = normalizePageOffset(pageOffset);
+    const pageChanged = pageIndex !== lastSubmittedWebtoonPage;
+    lastSubmittedWebtoonPage = pageIndex;
+
+    void window.electronAPI.reader
+      .updateProgress(
+        book.id,
+        pageIndex,
+        pageChanged ? getReadingStatus(pageIndex) : undefined,
+        false,
+        normalizedOffset,
+      )
+      .catch((error) => {
+        console.error("Failed to persist Webtoon position:", error);
+      });
+  }
+
+  function scheduleWebtoonProgressSave() {
+    readerProgressFlushed = false;
+    if (webtoonProgressSaveTimer) return;
+
+    webtoonProgressSaveTimer = setTimeout(() => {
+      webtoonProgressSaveTimer = null;
+      saveWebtoonProgress();
+    }, 300);
+  }
+
+  function flushReaderProgress() {
+    if (readerProgressFlushed || viewMode !== "webtoon") return;
+    readerProgressFlushed = true;
+
+    if (webtoonProgressSaveTimer) {
+      clearTimeout(webtoonProgressSaveTimer);
+      webtoonProgressSaveTimer = null;
+    }
+
+    const { pageIndex, pageOffset } = getCurrentWebtoonPosition();
+    window.electronAPI.reader.flushProgress(
+      book.id,
+      pageIndex,
+      getReadingStatus(pageIndex),
+      normalizePageOffset(pageOffset),
+    );
   }
 
   async function loadImageDims(
@@ -280,7 +400,10 @@
     img.src = url;
   }
 
-  async function resizeWindowToWebtoon(page: PageResult) {
+  async function resizeWindowToWebtoon(
+    ratio: number,
+    deferShow = false,
+  ) {
     if (lastAutoResizeMode === "webtoon") return;
     lastAutoResizeMode = "webtoon";
     hasWindowResized = true;
@@ -291,14 +414,8 @@
     const MIN_W = 500;
     const MIN_H = 500;
 
-    let ratio = page.ratio;
-    if (!ratio) {
-      const d = await loadImageDims(page.url);
-      if (d && d.w > 0 && d.h > 0) ratio = d.w / d.h;
-    }
-
     if (!ratio || ratio <= 0) {
-      showReaderWindow();
+      if (!deferShow) showReaderWindow();
       return;
     }
 
@@ -314,9 +431,8 @@
     if (targetW < MIN_W) targetW = MIN_W;
     if (targetH < MIN_H) targetH = MIN_H;
 
-    window.electronAPI.reader.resizeWindow(targetW, targetH).then(() => {
-      showReaderWindow();
-    });
+    await window.electronAPI.reader.resizeWindow(targetW, targetH);
+    if (!deferShow) showReaderWindow();
   }
 
   // --- Lifecycle ---
@@ -326,8 +442,10 @@
     // Initialize state from book
     totalPages = await window.electronAPI.reader.getPageCount(book.path);
     currentPage = book.current_page || 0;
+    currentPageOffset = normalizePageOffset(book.current_page_offset);
+    lastSubmittedWebtoonPage = currentPage;
     // Initial Load
-    await loadPage(currentPage);
+    await loadPage(currentPage, currentPageOffset);
   }
 
   onMount(() => {
@@ -337,23 +455,13 @@
     if ((window as any).electronAPI?.reader?.onFullscreenChange) {
       cleanupFullscreenListener = (
         window as any
-      ).electronAPI.reader.onFullscreenChange((state: boolean) => {
+      ).electronAPI.reader.onFullscreenChange(async (state: boolean) => {
         isFullscreen = state;
-
-        isFullscreenTransitioning = true;
-        clearTimeout(fullscreenTransitionTimeout);
-        if (fullscreenTransitionRafId1)
-          cancelAnimationFrame(fullscreenTransitionRafId1);
-        if (fullscreenTransitionRafId2)
-          cancelAnimationFrame(fullscreenTransitionRafId2);
-
-        fullscreenTransitionRafId1 = requestAnimationFrame(() => {
-          fullscreenTransitionRafId2 = requestAnimationFrame(() => {
-            isFullscreenTransitioning = false;
-            fullscreenTransitionRafId1 = 0;
-            fullscreenTransitionRafId2 = 0;
-          });
-        });
+        queueFullscreenTransitionSettle();
+        if (!state && viewMode === "webtoon") {
+          await tick();
+          await window.electronAPI.reader.revealWindow();
+        }
 
         // Force cancel any ongoing window drag if we enter fullscreen
         if (state && isWindowDragging) {
@@ -364,13 +472,6 @@
 
     document.addEventListener("fullscreenchange", handleDomFullscreenChange);
 
-    // Fallback: If auto-resize doesn't happen (e.g. error, or slow), show window anyway
-    setTimeout(() => {
-      if (!windowShown) {
-        showReaderWindow();
-      }
-    }, 1000);
-
     // Start auto-hider for controls
     resetUiTimeout();
 
@@ -380,17 +481,21 @@
       }
     };
     window.addEventListener("click", handleGlobalClick);
+    window.addEventListener("beforeunload", flushReaderProgress);
     return () => {
       window.removeEventListener("click", handleGlobalClick);
+      window.removeEventListener("beforeunload", flushReaderProgress);
     };
   });
 
   onDestroy(() => {
+    flushReaderProgress();
     // Cleanup blobs
     cleanupBlobs();
     clearTimeout(uiTimeout);
     clearTimeout(loadingTimeout);
     clearTimeout(fullscreenTransitionTimeout);
+    if (webtoonProgressSaveTimer) clearTimeout(webtoonProgressSaveTimer);
     if (fullscreenTransitionRafId1)
       cancelAnimationFrame(fullscreenTransitionRafId1);
     if (fullscreenTransitionRafId2)
@@ -422,36 +527,114 @@
     return to > from;
   }
 
-  async function handleWebtoonPageChange(index: number) {
+  function queueFullscreenTransitionSettle() {
+    if (viewMode === "webtoon" && !fullscreenWebtoonPosition) {
+      fullscreenWebtoonPosition = getCurrentWebtoonPosition();
+    }
+    if (webtoonProgressSaveTimer && fullscreenWebtoonPosition) {
+      clearTimeout(webtoonProgressSaveTimer);
+      webtoonProgressSaveTimer = null;
+      saveWebtoonProgress(fullscreenWebtoonPosition);
+    }
+    isFullscreenTransitioning = true;
+    fullscreenTransitionNonce += 1;
+    const nonce = fullscreenTransitionNonce;
+
+    clearTimeout(fullscreenTransitionTimeout);
+    if (fullscreenTransitionRafId1)
+      cancelAnimationFrame(fullscreenTransitionRafId1);
+    if (fullscreenTransitionRafId2)
+      cancelAnimationFrame(fullscreenTransitionRafId2);
+
+    fullscreenTransitionRafId1 = requestAnimationFrame(() => {
+      fullscreenTransitionRafId2 = requestAnimationFrame(async () => {
+        fullscreenTransitionRafId1 = 0;
+        fullscreenTransitionRafId2 = 0;
+
+        if (
+          nonce === fullscreenTransitionNonce &&
+          viewMode === "webtoon" &&
+          webtoonCanvasRef &&
+          fullscreenWebtoonPosition
+        ) {
+          await syncWebtoonCanvasToPosition(
+            fullscreenWebtoonPosition.pageIndex,
+            fullscreenWebtoonPosition.pageOffset,
+          );
+        }
+
+        if (nonce === fullscreenTransitionNonce) {
+          fullscreenWebtoonPosition = null;
+          isFullscreenTransitioning = false;
+          isEnteringFullscreen = false;
+        }
+      });
+    });
+  }
+
+  function handleWebtoonPositionChange(position: WebtoonPosition) {
+    if (isFullscreenTransitioning) return;
+
+    const index = Math.min(
+      Math.max(Math.trunc(position.pageIndex), 0),
+      Math.max(totalPages - 1, 0),
+    );
     const prevPage = currentPage;
     lastNavigationFromPage = prevPage;
-    const shouldUpdateTimestamp = isForwardProgress(prevPage, index);
     currentPage = index;
-
-    const status =
-      index === 0 ? "reading" : index >= totalPages - 1 ? "read" : "reading";
-    try {
-      await window.electronAPI.reader.updateProgress(
-        book.id,
-        index,
-        status,
-        shouldUpdateTimestamp
-      );
-    } catch (e) {
-      console.error("Failed to persist reading progress (webtoon):", e);
-    }
+    currentPageOffset = normalizePageOffset(position.pageOffset);
+    scheduleWebtoonProgressSave();
   }
 
   function handleWindowBlur() {
     cancelPanState();
+    isWindowDragging = false;
+    isWindowDragCandidate = false;
+  }
+
+  function normalizeWebtoonFitMode(value: unknown): WebtoonFitMode {
+    return value === "width" ? value : "contain";
   }
 
   async function loadSettings() {
     const settings = await window.electronAPI.settings.getAll();
     viewMode = (settings.defaultViewMode as any) || "single";
     fitMode = (settings.defaultFitMode as any) || "contain";
+    webtoonFitMode = normalizeWebtoonFitMode(
+      settings.defaultWebtoonFitMode,
+    );
+    if (
+      settings.defaultWebtoonFitMode === "height" ||
+      settings.defaultWebtoonFitMode === "fill"
+    ) {
+      void window.electronAPI.settings.set(
+        "defaultWebtoonFitMode",
+        webtoonFitMode,
+      );
+    }
     mangaMode = settings.mangaMode !== "false";
     backgroundColor = settings.backgroundColor || "#000000";
+
+    const readerInit = book.readerInit;
+    if (readerInit?.initialViewMode) {
+      viewMode = readerInit.initialViewMode;
+    }
+    if (typeof readerInit?.initialMangaMode === "boolean") {
+      mangaMode = readerInit.initialMangaMode;
+    }
+  }
+
+  async function restoreWebtoonPositionAfterLayout(
+    position: WebtoonPosition,
+  ) {
+    await tick();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await syncWebtoonCanvasToPosition(
+      position.pageIndex,
+      position.pageOffset,
+    );
   }
 
   function updateSettings(newSettings: any) {
@@ -469,7 +652,23 @@
         void loadPage(currentPage);
       }
     }
-    if (newSettings.fitMode) fitMode = newSettings.fitMode;
+    if (newSettings.fitMode) {
+      if (viewMode === "webtoon") {
+        const position = getCurrentWebtoonPosition();
+        webtoonFitMode = normalizeWebtoonFitMode(newSettings.fitMode);
+        window.electronAPI.settings.set(
+          "defaultWebtoonFitMode",
+          webtoonFitMode,
+        );
+        void restoreWebtoonPositionAfterLayout(position);
+      } else {
+        fitMode = newSettings.fitMode;
+        window.electronAPI.settings.set(
+          "defaultFitMode",
+          newSettings.fitMode,
+        );
+      }
+    }
     if (newSettings.mangaMode !== undefined) mangaMode = newSettings.mangaMode;
     if (newSettings.brightness) brightness = newSettings.brightness;
     if (newSettings.contrast) contrast = newSettings.contrast;
@@ -477,8 +676,6 @@
 
     if (newSettings.viewMode)
       window.electronAPI.settings.set("defaultViewMode", newSettings.viewMode);
-    if (newSettings.fitMode)
-      window.electronAPI.settings.set("defaultFitMode", newSettings.fitMode);
     if (newSettings.mangaMode !== undefined)
       window.electronAPI.settings.set(
         "mangaMode",
@@ -529,13 +726,54 @@
     }
   }
 
+  async function fetchPageInfo(
+    index: number,
+  ): Promise<{ ratio?: number } | null> {
+    if (index < 0 || (totalPages > 0 && index >= totalPages)) return null;
+
+    const cached = preloadedPages.get(index);
+    if (cached?.ratio) {
+      return { ratio: cached.ratio };
+    }
+
+    try {
+      const result = await window.electronAPI.reader.getPageInfo(
+        book.path,
+        index,
+      );
+      if (result?.width && result?.height) {
+        return { ratio: result.width / result.height };
+      }
+    } catch (e) {
+      console.error("Error loading page info " + index, e);
+    }
+
+    return null;
+  }
+
   async function preload(index: number) {
     if (index < 0 || index >= totalPages || preloadedPages.has(index)) return;
     const page = await fetchPage(index);
     if (page) preloadedPages.set(index, page);
   }
 
-  async function loadPage(index: number) {
+  async function syncWebtoonCanvasToPosition(
+    index: number,
+    pageOffset = 0,
+  ) {
+    for (let i = 0; i < 12; i++) {
+      await tick();
+      if (webtoonCanvasRef) {
+        await webtoonCanvasRef.jumpToPosition(index, pageOffset);
+        return;
+      }
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+  }
+
+  async function loadPage(index: number, webtoonPageOffset = 0) {
     if (index < 0 || (totalPages > 0 && index >= totalPages)) return;
 
     targetLoadIndex = index;
@@ -630,6 +868,9 @@
       } else if (viewMode === "webtoon") {
         clearTimeout(loadingTimeout);
         showSpinner = false;
+        if (!hasWindowResized && !isFullscreen) {
+          pendingInitialWebtoonShow = !windowShown;
+        }
         // Preload the current page before showing the window to avoid an initial blank flash.
         // This matches the perceived behavior of single/double where the current page is loaded before display.
         const prefetched = await fetchPage(index);
@@ -637,9 +878,7 @@
           preloadedPages.set(index, prefetched);
         }
         if (!hasWindowResized) {
-          if (!isFullscreen && prefetched) {
-            await resizeWindowToWebtoon(prefetched);
-          } else {
+          if (isFullscreen || !prefetched) {
             hasWindowResized = true;
             showReaderWindow();
           }
@@ -654,6 +893,13 @@
 
       currentPage = index;
 
+      if (viewMode === "webtoon") {
+        currentPageOffset = normalizePageOffset(webtoonPageOffset);
+        await syncWebtoonCanvasToPosition(index, currentPageOffset);
+      } else {
+        currentPageOffset = 0;
+      }
+
       // Update DB
       const status =
         index === 0 ? "reading" : index >= totalPages - 1 ? "read" : "reading";
@@ -662,8 +908,10 @@
           book.id,
           index,
           status,
-          shouldUpdateTimestamp
+          shouldUpdateTimestamp,
+          viewMode === "webtoon" ? currentPageOffset : 0,
         );
+        if (viewMode === "webtoon") lastSubmittedWebtoonPage = index;
       } catch (e) {
         console.error("Failed to persist reading progress:", e);
       }
@@ -967,9 +1215,35 @@
     }
   }
 
+  function setWebtoonZoom(
+    newZoom: number,
+    clientX = window.innerWidth / 2,
+    clientY = window.innerHeight / 2,
+  ) {
+    const oldZoom = zoomLevel;
+    if (Math.abs(newZoom - oldZoom) < 0.01) return;
+    if (zoomAnimRafId) {
+      cancelAnimationFrame(zoomAnimRafId);
+      zoomAnimRafId = 0;
+    }
+    const recenter = Math.abs(newZoom - 100) < 0.01;
+    const anchor = webtoonCanvasRef?.captureZoomAnchor(clientX, clientY);
+    zoomLevel = newZoom;
+    targetZoomLevel = newZoom;
+    if (anchor) {
+      void webtoonCanvasRef?.restoreZoomAnchor(anchor, recenter);
+    } else if (recenter) {
+      void webtoonCanvasRef?.centerZoomHorizontally();
+    }
+  }
+
   function zoomIn() {
     // Keyboard zoom - just zoom at center
     const newZoom = Math.min(ZOOM_MAX, targetZoomLevel + ZOOM_STEP);
+    if (viewMode === "webtoon") {
+      setWebtoonZoom(newZoom);
+      return;
+    }
     targetZoomLevel = newZoom;
     if (newZoom === 100) {
       targetPanX = 0;
@@ -986,6 +1260,10 @@
     // Keyboard zoom - zoom at center, scale pan proportionally
     const oldZoom = targetZoomLevel;
     const newZoom = Math.max(ZOOM_MIN, targetZoomLevel - ZOOM_STEP);
+    if (viewMode === "webtoon") {
+      setWebtoonZoom(newZoom);
+      return;
+    }
     targetZoomLevel = newZoom;
 
     // Scale pan proportionally to keep view centered
@@ -1010,6 +1288,10 @@
   }
 
   function resetZoom() {
+    if (viewMode === "webtoon") {
+      setWebtoonZoom(100);
+      return;
+    }
     targetZoomLevel = 100;
     targetPanX = 0;
     targetPanY = 0;
@@ -1018,22 +1300,24 @@
   }
 
   function handleWheel(e: WheelEvent) {
-    // Don't zoom in webtoon mode - let it scroll naturally
-    if (viewMode === "webtoon") return;
-
-    e.preventDefault();
-
-    const el = transformTargetEl;
-    if (!el || !viewportEl) return;
-
     // Normalize wheel delta to pixels. deltaMode: 0=pixel, 1=line, 2=page.
     const linePx = 16;
     const normalizedDeltaY =
       e.deltaMode === 1
         ? e.deltaY * linePx
         : e.deltaMode === 2
-          ? e.deltaY * viewportEl.clientHeight
+          ? e.deltaY * (viewportEl?.clientHeight ?? window.innerHeight)
           : e.deltaY;
+
+    if (viewMode === "webtoon") {
+      if (!e.ctrlKey) return;
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest("[data-webtoon-canvas]")) return;
+      e.preventDefault();
+    } else {
+      e.preventDefault();
+      if (!transformTargetEl || !viewportEl) return;
+    }
 
     wheelQueue.push({
       deltaY: normalizedDeltaY,
@@ -1045,7 +1329,14 @@
 
     const process = () => {
       wheelRafId = 0;
-      if (!transformTargetEl || !viewportEl) {
+      const isWebtoonZoom = viewMode === "webtoon";
+      const webtoonCanvas = webtoonCanvasRef;
+      const targetElement = transformTargetEl;
+      const readerViewport = viewportEl;
+      if (
+        (isWebtoonZoom && !webtoonCanvas) ||
+        (!isWebtoonZoom && (!targetElement || !readerViewport))
+      ) {
         wheelQueue = [];
         return;
       }
@@ -1079,11 +1370,25 @@
           return;
         }
 
-        const viewportRect = viewportEl.getBoundingClientRect();
+        if (isWebtoonZoom) {
+          const anchor = webtoonCanvas!.captureZoomAnchor(
+            evt.clientX,
+            evt.clientY,
+          );
+          zoomLevel = newZoom;
+          targetZoomLevel = newZoom;
+          if (anchor) void webtoonCanvas!.restoreZoomAnchor(anchor);
+          if (wheelQueue.length) {
+            wheelRafId = requestAnimationFrame(process);
+          }
+          return;
+        }
+
+        const viewportRect = readerViewport!.getBoundingClientRect();
         const vx = viewportRect.left + viewportRect.width / 2;
         const vy = viewportRect.top + viewportRect.height / 2;
 
-        const elRect = transformTargetEl.getBoundingClientRect();
+        const elRect = targetElement!.getBoundingClientRect();
         const insideTarget =
           evt.clientX >= elRect.left &&
           evt.clientX <= elRect.right &&
@@ -1128,6 +1433,16 @@
     wheelRafId = requestAnimationFrame(process);
   }
 
+  function armWindowDrag(e: MouseEvent) {
+    isWindowDragCandidate = true;
+    isWindowDragging = false;
+    windowDragCandidateStartX = e.screenX;
+    windowDragCandidateStartY = e.screenY;
+    windowDragStartX = e.screenX;
+    windowDragStartY = e.screenY;
+    suppressNextPrimaryClick = false;
+  }
+
   function handleMouseDown(e: MouseEvent) {
     if (showSettings) return;
     // Ignore scrubber interactions
@@ -1143,6 +1458,10 @@
     }
 
     // Left mouse interaction
+    if (e.button === 0 && viewMode === "webtoon") {
+      return;
+    }
+
     if (e.button === 0 && viewMode !== "webtoon") {
       if (zoomAnimRafId) {
         cancelAnimationFrame(zoomAnimRafId);
@@ -1152,13 +1471,7 @@
       const isZoomedOut = zoomLevel <= 100;
 
       if (isZoomedOut && !isFullscreen) {
-        isWindowDragCandidate = true;
-        isWindowDragging = false;
-        windowDragCandidateStartX = e.screenX;
-        windowDragCandidateStartY = e.screenY;
-        windowDragStartX = e.screenX;
-        windowDragStartY = e.screenY;
-        suppressNextPrimaryClick = false;
+        armWindowDrag(e);
       } else {
         if (isFullscreen || zoomLevel > 100) {
           isPanCandidate = true;
@@ -1190,10 +1503,11 @@
     if (isWindowDragging) {
       const dx = e.screenX - windowDragStartX;
       const dy = e.screenY - windowDragStartY;
-      const winX = window.screenX;
-      const winY = window.screenY;
 
-      window.electronAPI.reader.moveWindow(winX + dx, winY + dy);
+      window.electronAPI.reader.moveWindow(
+        window.screenX + dx,
+        window.screenY + dy,
+      );
 
       windowDragStartX = e.screenX;
       windowDragStartY = e.screenY;
@@ -1316,8 +1630,22 @@
 
   async function handleDoubleClick() {
     if (isFullscreenTransitioning) return;
+    isEnteringFullscreen = !isFullscreen;
+    if (viewMode === "webtoon") {
+      fullscreenWebtoonPosition = getCurrentWebtoonPosition();
+      if (webtoonProgressSaveTimer) {
+        clearTimeout(webtoonProgressSaveTimer);
+        webtoonProgressSaveTimer = null;
+        saveWebtoonProgress(fullscreenWebtoonPosition);
+      }
+    }
     isFullscreenTransitioning = true;
     clearTimeout(fullscreenTransitionTimeout);
+    fullscreenTransitionTimeout = setTimeout(() => {
+      fullscreenWebtoonPosition = null;
+      isFullscreenTransitioning = false;
+      isEnteringFullscreen = false;
+    }, 1200);
 
     if (hasElectronFullscreenApi()) {
       await tick();
@@ -1331,9 +1659,6 @@
     } else {
       void toggleFullscreenSafe();
     }
-    fullscreenTransitionTimeout = setTimeout(() => {
-      isFullscreenTransitioning = false;
-    }, 700);
   }
 
   // --- Context Menu Handlers ---
@@ -1411,6 +1736,27 @@
   let webtoonPages = $derived.by(() => {
     return Array.from({ length: totalPages }, (_, i) => i);
   });
+
+  async function handleInitialWebtoonPositioned() {
+    if (!pendingInitialWebtoonShow) return;
+    pendingInitialWebtoonShow = false;
+    await showReaderWindow();
+  }
+
+  async function handleWebtoonColumnAspectRatio(ratio: number) {
+    if (hasWindowResized || isFullscreen) return;
+    let resizeRatio = ratio;
+    if (webtoonFitMode === "width") {
+      const currentPageInfo = await fetchPageInfo(currentPage);
+      resizeRatio = currentPageInfo?.ratio ?? ratio;
+    }
+    await resizeWindowToWebtoon(resizeRatio, pendingInitialWebtoonShow);
+  }
+
+  function moveReaderWindow(x: number, y: number) {
+    window.electronAPI.reader.moveWindow(x, y);
+  }
+
 </script>
 
 <svelte:window
@@ -1433,7 +1779,7 @@
 >
   <div
     class="relative w-full h-full flex flex-col"
-    class:invisible={isFullscreenTransitioning}
+    class:invisible={isEnteringFullscreen}
     class:pointer-events-none={isFullscreenTransitioning}
   >
     <ReaderOverlay
@@ -1446,12 +1792,14 @@
       onNext={mangaMode ? prevPage : nextPage}
       onPrev={mangaMode ? nextPage : prevPage}
       onToggleSettings={() => (showSettings = !showSettings)}
+      windowDraggable={viewMode === "webtoon" && !isFullscreen}
+      onWindowDragStart={armWindowDrag}
     />
 
     <ReaderSettings
       show={showSettings}
       {viewMode}
-      {fitMode}
+      fitMode={displayedFitMode}
       {mangaMode}
       {brightness}
       {contrast}
@@ -1461,17 +1809,26 @@
     />
 
     <div class="flex-1 w-full h-full relative z-0" bind:this={viewportEl}>
-      {#if viewMode === "webtoon"}
+      {#if viewMode === "webtoon" && totalPages > 0}
         <WebtoonCanvas
+          bind:this={webtoonCanvasRef}
           pages={webtoonPages}
           {currentPage}
+          initialPageOffset={currentPageOffset}
+          fitMode={webtoonFitMode}
+          fullscreen={isFullscreen}
           loadPageFn={fetchPage}
-          onPageChange={handleWebtoonPageChange}
+          loadPageInfoFn={fetchPageInfo}
+          onPositionChange={handleWebtoonPositionChange}
           onToggleUI={toggleOverlay}
+          onInitialPositioned={handleInitialWebtoonPositioned}
           {brightness}
           {contrast}
           {zoomLevel}
           onContextMenu={handleWebtoonContextMenu}
+          onMoveWindow={moveReaderWindow}
+          onDragStart={() => (contextMenu.visible = false)}
+          onColumnAspectRatioResolved={handleWebtoonColumnAspectRatio}
         />
       {:else if viewMode === "double" && currentPage > 0}
         <DoublePageCanvas
@@ -1526,7 +1883,7 @@
       onClose={() => (contextMenu.visible = false)}
       onHidePage={hidePage}
       {viewMode}
-      {fitMode}
+      fitMode={displayedFitMode}
       {mangaMode}
       onUpdateSettings={updateSettings}
     />

@@ -1,5 +1,6 @@
 import { ipcMain, app, shell } from "electron";
 import path from "path";
+import type { DownloaderHistoryScope } from "../preload/types";
 import { getParser } from "./parsers";
 import * as db from "../database/database";
 import { extractCover, getCoverAsDataUrl } from "../coverExtractor";
@@ -29,17 +30,23 @@ export function registerDownloaderIpc(manager: DownloaderManager) {
     return manager.queue.getLogs(id);
   });
 
-  ipcMain.handle("downloader:get-history", () => {
-    const limit = parseInt(db.getSetting("maxHistoryItems") || "50");
-    return db.getDownloadHistory(limit);
+  ipcMain.handle("downloader:get-history", (_, scope: DownloaderHistoryScope) => {
+    const parsedLimit = Number.parseInt(
+      String(db.getSetting("maxHistoryItems") || "50"),
+      10,
+    );
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(500, Math.max(10, parsedLimit))
+      : 50;
+    return db.getDownloadHistoryByScope(scope, limit);
   });
 
   ipcMain.handle("downloader:login", async (_, siteKey: string) => {
     return manager.fetcher.openLoginWindow(siteKey);
   });
 
-  ipcMain.handle("downloader:clear-history", () => {
-    db.clearDownloadHistory();
+  ipcMain.handle("downloader:clear-history", (_, scope: DownloaderHistoryScope) => {
+    db.clearDownloadHistoryByScope(scope);
     return true;
   });
 
@@ -63,10 +70,13 @@ export function registerDownloaderIpc(manager: DownloaderManager) {
     return true;
   });
 
-  ipcMain.handle("downloader:remove-history-item", (_, id: number) => {
-    db.removeDownloadHistoryItem(id);
-    return true;
-  });
+  ipcMain.handle(
+    "downloader:remove-history-item",
+    (_, scope: DownloaderHistoryScope, id: number) => {
+      db.removeDownloadHistoryItemByScope(scope, id);
+      return true;
+    },
+  );
 
   ipcMain.handle("downloader:open-folder", () => {
     const folder =

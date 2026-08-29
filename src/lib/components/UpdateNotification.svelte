@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fade, fly } from "svelte/transition";
+  import type { UpdateStatusPayload } from "../../../electron/preload/types";
 
   type UpdateStatus =
     | "idle"
@@ -18,7 +19,7 @@
 
   onMount(() => {
     const unsubscribe = window.electronAPI.update.onStatusChange(
-      (updateState: any) => {
+      (updateState: UpdateStatusPayload) => {
         console.log("[Notification] Received update status:", updateState);
         if (updateState.status === "available") {
           status = "available";

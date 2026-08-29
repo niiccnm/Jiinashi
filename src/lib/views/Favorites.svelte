@@ -7,10 +7,15 @@
   import TypeSelector from "../components/TypeSelector.svelte";
   import BulkSelection from "../components/BulkSelection.svelte";
   import ArchiveManager from "../components/ArchiveManager.svelte";
-  import { SelectionModel } from "../state/selection.svelte";
+  import MoveToFolderDialog from "../components/MoveToFolderDialog.svelte";
+  import {
+    handleSelectionMouseDown,
+    SelectionModel,
+  } from "../state/selection.svelte";
   import { dragScroll } from "../utils/dragScroll";
   import FolderSwitcher from "../components/FolderSwitcher.svelte";
   import type { LibraryItem } from "../stores/app";
+  import { toasts } from "../stores/toast";
 
   let items = $state<LibraryItem[]>([]);
   let loading = $state(false);
@@ -25,6 +30,7 @@
 
   let itemCountHovered = $state(false);
   let managingArchiveItem = $state<LibraryItem | null>(null);
+  let moveItem = $state<LibraryItem | null>(null);
 
   let selectedRoot = $state(
     localStorage.getItem("favoritesSelectedRoot") || "",
@@ -680,6 +686,10 @@
   let showDeleteDialog = $state(false);
   let pendingDeleteItem = $state<LibraryItem | null>(null);
   let deleteDialogLoading = $state(false);
+  let renameItem = $state<LibraryItem | null>(null);
+  let renameValue = $state("");
+  let renameLoading = $state(false);
+  let renameError = $state("");
 
   // Tag Editor State
   let showTagEditor = $state(false);
@@ -775,6 +785,46 @@
     activeMenuId = null;
   }
 
+  function openMoveDialog(item: LibraryItem) {
+    closeMenu();
+    moveItem = item;
+  }
+
+  function openRenameDialog(item: LibraryItem) {
+    closeMenu();
+    renameItem = item;
+    renameValue = item.title;
+    renameError = "";
+  }
+
+  async function handleRename() {
+    if (!renameItem || !renameValue.trim() || renameLoading) return;
+    renameLoading = true;
+    renameError = "";
+
+    try {
+      const result = await window.electronAPI.library.renameItem(
+        renameItem.id,
+        renameValue.trim(),
+      );
+      if (!result.success) {
+        renameError = result.error || "Failed to rename";
+        return;
+      }
+
+      renameItem = null;
+    } catch (error: any) {
+      renameError = error?.message || "Failed to rename";
+    } finally {
+      renameLoading = false;
+    }
+  }
+
+  function handleShowInFolder(item: LibraryItem) {
+    closeMenu();
+    window.electronAPI.library.showInFolder(item.path);
+  }
+
   function openTagEditor(item: LibraryItem, event: MouseEvent) {
     event.stopPropagation();
     closeMenu(); // Ensure menu closes
@@ -847,6 +897,13 @@
       items = items.filter((i) => i.id !== itemToDelete.id);
       showDeleteDialog = false;
       pendingDeleteItem = null;
+    } catch (error) {
+      console.error("Failed to delete favorite item:", error);
+      toasts.add(
+        "The item could not be moved to the Recycle Bin.",
+        "error",
+        6000,
+      );
     } finally {
       deleteDialogLoading = false;
     }
@@ -1013,6 +1070,33 @@
   onCancel={handleCancelDelete}
 />
 
+<Dialog
+  open={renameItem !== null}
+  title="Rename File"
+  description={`Enter a new name for "${renameItem?.title ?? ""}".`}
+  confirmText="Rename"
+  variant="neutral"
+  loading={renameLoading}
+  onConfirm={handleRename}
+  onCancel={() => {
+    renameItem = null;
+    renameError = "";
+  }}
+>
+  <div class="space-y-4">
+    <input
+      type="text"
+      bind:value={renameValue}
+      class="w-full px-4 py-2.5 bg-slate-950/20 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/10 transition-[border-color,background-color,ring-color] duration-200"
+      placeholder="Enter new name..."
+      onkeydown={(e) => e.key === "Enter" && handleRename()}
+    />
+    {#if renameError}
+      <p class="text-sm text-red-400">{renameError}</p>
+    {/if}
+  </div>
+</Dialog>
+
 <!-- Tag Editor Dialog -->
 {#if showTagEditor && tagEditorItemId}
   <div
@@ -1116,7 +1200,7 @@
       </button>
 
       <div class="p-6 pb-2 shrink-0">
-        <h2 class="text-xl font-bold text-white mb-1">Set Types</h2>
+        <h2 class="text-xl font-bold text-white mb-1">Set Type</h2>
         <p class="text-sm text-slate-400 truncate">{typeEditorItemTitle}</p>
       </div>
 
@@ -1471,7 +1555,8 @@
           }}
           style="z-index: {activeMenuId === item.id ? 50 : 'auto'}"
           onclick={(e: MouseEvent) => handleItemClick(item, e)}
-          onmousedown={(e: MouseEvent) => e.shiftKey && e.preventDefault()}
+          onmousedown={(e: MouseEvent) =>
+            handleSelectionMouseDown(e, selection.selectionMode)}
           ondblclick={(e: MouseEvent) => handleItemClick(item, e)}
           onkeydown={(e: KeyboardEvent) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -1487,7 +1572,7 @@
                 item.id,
               )
                 ? 'bg-blue-500/10 border-2 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.2)]'
-                : 'bg-blue-500/0 border-0'}"
+                : 'bg-blue-500/0 border-2 border-transparent'}"
               onclick={(e) => selection.toggle(item.id, filteredItems, e)}
               onkeydown={(e) =>
                 e.key === "Enter" &&
@@ -1571,7 +1656,7 @@
                       }}
                     >
                       <svg
-                        class="w-4 h-4 text-blue-400 opacity-70"
+                        class="w-4 h-4 text-sky-400 opacity-80"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -1593,7 +1678,7 @@
                       }}
                     >
                       <svg
-                        class="w-4 h-4 text-indigo-400 opacity-70"
+                        class="w-4 h-4 text-sky-400 opacity-80"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -1601,10 +1686,10 @@
                           stroke-linecap="round"
                           stroke-linejoin="round"
                           stroke-width="2"
-                          d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
+                          d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
                         /></svg
                       >
-                      Set Types
+                      Set Type
                     </button>
 
                     {#if item.type === "book"}
@@ -1616,7 +1701,7 @@
                         }}
                       >
                         <svg
-                          class="w-4 h-4 text-emerald-400 opacity-70"
+                          class="w-4 h-4 text-sky-400 opacity-80"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"
@@ -1633,13 +1718,73 @@
 
                     <button
                       class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
+                      onclick={() => openMoveDialog(item)}
+                    >
+                      <svg
+                        class="w-4 h-4 text-sky-400 opacity-80"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+                        />
+                      </svg>
+                      Move Item
+                    </button>
+
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
+                      onclick={() => openRenameDialog(item)}
+                    >
+                      <svg
+                        class="w-4 h-4 text-sky-400 opacity-80"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                        />
+                      </svg>
+                      Rename
+                    </button>
+
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
+                      onclick={() => handleShowInFolder(item)}
+                    >
+                      <svg
+                        class="w-4 h-4 text-sky-400 opacity-80"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"
+                        />
+                      </svg>
+                      Open Location
+                    </button>
+
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm text-slate-300 hover:text-white hover:bg-slate-600 rounded-lg flex items-center gap-2 transition-colors"
                       onclick={(e) => {
                         closeMenu();
                         deleteItem(item, e);
                       }}
                     >
                       <svg
-                        class="w-4 h-4 text-red-400 opacity-70"
+                        class="w-4 h-4 text-rose-500 opacity-90"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -1866,6 +2011,16 @@
     onClose={() => (managingArchiveItem = null)}
   />
 {/if}
+
+<MoveToFolderDialog
+  open={moveItem !== null}
+  itemsToMove={moveItem ? [moveItem] : []}
+  onClose={() => (moveItem = null)}
+  onMoved={async () => {
+    if (selectedRoot) await loadFavorites(true);
+    toasts.add("Item moved successfully", "success");
+  }}
+/>
 
 <style>
   /* Aggressively nuke focus outlines for general elements to keep clean UI */

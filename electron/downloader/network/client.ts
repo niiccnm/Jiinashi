@@ -1,4 +1,4 @@
-import { net } from "electron";
+import { app, net } from "electron";
 import axios from "axios";
 import * as https from "https";
 import { USER_AGENT } from "./constants";
@@ -121,6 +121,7 @@ export async function fetchWithSession(
 
   const bridgedCookies = await getExHentaiBridgedCookies(url);
   if (checkCancel && checkCancel()) throw new Error("Cancelled by user");
+  const isNHentaiApiV2 = url.includes("nhentai.net/api/v2/");
 
   return new Promise((resolve, reject) => {
     const request = net.request({
@@ -132,8 +133,17 @@ export async function fetchWithSession(
 
     // Standard headers
     request.setHeader(
+      "User-Agent",
+      isNHentaiApiV2
+        ? `Jiinashi/${app.getVersion()} (https://github.com/niiccnm/jiinashi)`
+        : USER_AGENT,
+    );
+    if (referer) request.setHeader("Referer", referer);
+    request.setHeader(
       "Accept",
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+      isNHentaiApiV2
+        ? "application/json,text/plain;q=0.9,*/*;q=0.8"
+        : "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     );
     console.log(`[Base] Fetching ${url}`);
 

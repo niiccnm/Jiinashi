@@ -6,10 +6,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "check:vite-env": "node .tmp/script/check-vite-env.js",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "postinstall": "electron-builder install-app-deps",
     "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('dist-electron',{recursive:true,force:true});\"",
     "predist": "npm run clean",
-    "dist": "npm run build && electron-builder"
+    "build:tracking-config": "node scripts/tracking-client-config.cjs build",
+    "verify:tracking-config": "node scripts/tracking-client-config.cjs verify",
+    "dist": "npm run build && npm run build:tracking-config && electron-builder && npm run verify:tracking-config"
   },
   "repository": {
     "type": "git",
@@ -70,7 +74,7 @@
     "autoprefixer": "^10.4.22",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^35.7.5",
+    "electron": "^43.4.1",
     "electron-builder": "^26.4.0",
     "postcss": "^8.5.6",
     "svelte": "^5.45.9",
@@ -85,13 +89,15 @@
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.0",
     "axios": "^1.13.2",
     "better-sqlite3": "^12.5.0",
+    "bytenode": "^1.6.0",
     "cheerio": "^1.1.2",
     "electron-updater": "^6.7.3",
+    "fs-extra": "^11.4.0",
     "node-stream-zip": "^1.15.0",
     "node-unrar-js": "^2.0.2",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.3"
   }
 }
