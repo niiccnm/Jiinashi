@@ -659,11 +659,16 @@
         <Downloader />
       </div>
 
+      <div
+        style="display: {view === 'recent' ? 'flex' : 'none'}"
+        class="h-full flex-col"
+      >
+        <Recent active={view === "recent"} />
+      </div>
+
       <!-- Other views still use conditional rendering as they might not need state preservation or are lighter -->
       {#if view === "reader" && currentBook}
         <Reader book={currentBook} />
-      {:else if view === "recent"}
-        <Recent />
       {:else if view === "settings"}
         <Settings />
       {:else if view === "tags"}

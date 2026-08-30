@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { fade } from "svelte/transition";
   import { openBook } from "../stores/app";
   import type { LibraryItem } from "../stores/app";
@@ -10,10 +10,16 @@
   import LibraryMetadataDialogs from "../components/Library/LibraryMetadataDialogs.svelte";
   import { toasts } from "../stores/toast";
 
+  let { active = true }: { active?: boolean } = $props();
+
+  const COVER_CACHE_RELEASE_DELAY_MS = 5_000;
+
   let items = $state<LibraryItem[]>([]);
   let loading = $state(true);
+  let showLoadingIndicator = $state(false);
   let coverCache = $state<Record<number, string>>({});
   let loadingCovers = $state<Set<number>>(new Set());
+  let coverCacheGeneration = 0;
   let refreshTimer: any = null;
   let blurR18 = $state(false);
   let blurR18Hover = $state(false);
@@ -219,7 +225,11 @@
   }
 
   async function loadCoversForItems(itemList: LibraryItem[]) {
+    const cacheGeneration = coverCacheGeneration;
+
     for (const item of itemList) {
+      if (!active || cacheGeneration !== coverCacheGeneration) return;
+
       if (
         item.cover_path &&
         !coverCache[item.id] &&
@@ -232,19 +242,51 @@
           const dataUrl = await window.electronAPI.library.getCover(
             item.cover_path,
           );
-          if (dataUrl) {
+          if (dataUrl && cacheGeneration === coverCacheGeneration) {
             coverCache[item.id] = dataUrl;
-            coverCache = { ...coverCache };
           }
         } catch (e) {
           console.error("Failed to load cover:", e);
         } finally {
-          loadingCovers.delete(item.id);
-          loadingCovers = new Set(loadingCovers);
+          if (cacheGeneration === coverCacheGeneration) {
+            loadingCovers.delete(item.id);
+            loadingCovers = new Set(loadingCovers);
+          }
         }
       }
     }
   }
+
+  $effect(() => {
+    if (!loading) {
+      showLoadingIndicator = false;
+      return;
+    }
+
+    const revealTimer = setTimeout(() => {
+      showLoadingIndicator = true;
+    }, 200);
+
+    return () => clearTimeout(revealTimer);
+  });
+
+  $effect(() => {
+    if (active) {
+      untrack(() => {
+        void loadCoversForItems(items);
+        void refreshSettings();
+      });
+      return;
+    }
+
+    const releaseTimer = setTimeout(() => {
+      coverCacheGeneration += 1;
+      coverCache = {};
+      loadingCovers = new Set();
+    }, COVER_CACHE_RELEASE_DELAY_MS);
+
+    return () => clearTimeout(releaseTimer);
+  });
 
   function formatDate(dateStr: string | null): string {
     if (!dateStr) return "";
@@ -269,7 +311,6 @@
 
   onMount(() => {
     loadRecent();
-    refreshSettings();
     const unsubscribe = window.electronAPI.library.onItemUpdated(
       async (payload) => {
         const existingIndex = items.findIndex((i) => i.id === payload.id);
@@ -365,7 +406,9 @@
   {#if loading}
     <div class="flex items-center justify-center h-full">
       <div
-        class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"
+        class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin {showLoadingIndicator
+          ? ''
+          : 'opacity-0'}"
       ></div>
     </div>
   {:else if items.length === 0}

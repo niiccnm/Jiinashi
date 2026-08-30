@@ -30,7 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Now removed features
 
 ### Fixed
-- Bug fixes
+
+- **Recent Page Performance and Stability**: Reduced first-visit flashing, page-switch flicker, and intermittent stuttering while quickly scrolling the Recent list.
+  - **First-Visit Readiness**: Recent item metadata begins loading during startup while cover loading remains inactive until the page is opened, allowing already-loaded rows to appear on the first frame.
+  - **Loading Feedback**: The main spinner appears only when loading lasts 200 ms; its delay continues while Recent is hidden so unusually slow startup queries do not produce an empty dark frame.
+  - **Navigation and Memory Balance**: Between standard page switches, the Recent view retains its list state and keeps covers for up to five seconds for quick returns before releasing the cover data.
+  - **Cover Loading Safety**: Prevented stale cover requests from restoring released data or clearing newer loading state, and removed redundant full-cache updates that contributed to intermittent scroll stalls.
+  - **Files Modified**: `src/App.svelte`, `src/lib/views/Recent.svelte`.
 
 ### Security
 - Vulnerability fixes
