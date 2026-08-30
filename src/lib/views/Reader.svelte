@@ -79,6 +79,7 @@
   let brightness = $state(100);
   let contrast = $state(100);
   let gamma = $state(100);
+  let greyscale = $state(false);
   let backgroundColor = $state("#000000");
 
   // Zoom state (percentage, 100 = normal)
@@ -147,6 +148,7 @@
   let fullscreenTransitionNonce = 0;
   let fullscreenTransitionTimeout: any;
   let cleanupFullscreenListener: (() => void) | undefined;
+  let cleanupGreyscaleShortcutListener: (() => void) | undefined;
   let fullscreenWebtoonPosition: WebtoonPosition | null = null;
   let webtoonProgressSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSubmittedWebtoonPage = -1;
@@ -470,6 +472,11 @@
       });
     }
 
+    cleanupGreyscaleShortcutListener =
+      window.electronAPI.reader.onToggleGreyscale(() => {
+        greyscale = !greyscale;
+      });
+
     document.addEventListener("fullscreenchange", handleDomFullscreenChange);
 
     // Start auto-hider for controls
@@ -501,6 +508,8 @@
     if (fullscreenTransitionRafId2)
       cancelAnimationFrame(fullscreenTransitionRafId2);
     if (cleanupFullscreenListener) cleanupFullscreenListener();
+    if (cleanupGreyscaleShortcutListener)
+      cleanupGreyscaleShortcutListener();
     document.removeEventListener("fullscreenchange", handleDomFullscreenChange);
   });
 
@@ -673,6 +682,8 @@
     if (newSettings.brightness) brightness = newSettings.brightness;
     if (newSettings.contrast) contrast = newSettings.contrast;
     if (newSettings.gamma) gamma = newSettings.gamma;
+    if (newSettings.greyscale !== undefined)
+      greyscale = newSettings.greyscale;
 
     if (newSettings.viewMode)
       window.electronAPI.settings.set("defaultViewMode", newSettings.viewMode);
@@ -1165,8 +1176,9 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (showSettings) return; // Let settings handle its own, or close on esc
     if (isTypingTarget(e.target)) return;
+
+    if (showSettings) return; // Let settings handle its own, or close on esc
 
     switch (e.key) {
       case "Home":
@@ -1444,10 +1456,8 @@
   }
 
   function handleMouseDown(e: MouseEvent) {
-    if (showSettings) return;
-    // Ignore scrubber interactions
     const target = e.target as HTMLElement | null;
-    if (target && target.closest("[data-reader-scrubber]")) {
+    if (target?.closest("[data-reader-settings], [data-reader-scrubber]")) {
       return;
     }
 
@@ -1614,6 +1624,9 @@
 
   function handleReaderDoubleClick(e: MouseEvent) {
     if (e.button !== 0) return;
+    const eventTarget = e.target as HTMLElement | null;
+    if (eventTarget?.closest("[data-reader-settings], button, input")) return;
+
     const target = e.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -1804,6 +1817,7 @@
       {brightness}
       {contrast}
       {gamma}
+      {greyscale}
       onClose={() => (showSettings = false)}
       onUpdateSettings={updateSettings}
     />
@@ -1824,6 +1838,7 @@
           onInitialPositioned={handleInitialWebtoonPositioned}
           {brightness}
           {contrast}
+          {greyscale}
           {zoomLevel}
           onContextMenu={handleWebtoonContextMenu}
           onMoveWindow={moveReaderWindow}
@@ -1841,6 +1856,7 @@
           {brightness}
           {contrast}
           {gamma}
+          {greyscale}
           {zoomLevel}
           {panX}
           {panY}
@@ -1862,6 +1878,7 @@
           {brightness}
           {contrast}
           {gamma}
+          {greyscale}
           {zoomLevel}
           {panX}
           {panY}

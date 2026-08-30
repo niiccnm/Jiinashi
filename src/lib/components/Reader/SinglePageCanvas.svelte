@@ -7,6 +7,7 @@
     brightness?: number;
     contrast?: number;
     gamma?: number;
+    greyscale?: boolean;
     zoomLevel?: number;
     panX?: number;
     panY?: number;
@@ -28,6 +29,7 @@
     brightness = 100,
     contrast = 100,
     gamma = 100,
+    greyscale = false,
     zoomLevel = 100,
     panX = 0,
     panY = 0,
@@ -155,7 +157,9 @@
       alt="Page"
       class={getFitClass()}
       style="transform: translate({panX}px, {panY}px) scale({zoomLevel /
-        100}); filter: brightness({brightness}%) contrast({contrast}%); image-rendering: high-quality; will-change: {isPanning
+        100}); filter: brightness({brightness}%) contrast({contrast}%) grayscale({greyscale
+        ? 100
+        : 0}%); image-rendering: high-quality; will-change: {isPanning
         ? 'transform'
         : 'auto'}; backface-visibility: hidden;"
       bind:this={transformTargetEl}

@@ -8,6 +8,7 @@
     brightness?: number;
     contrast?: number;
     gamma?: number;
+    greyscale?: boolean;
     zoomLevel?: number;
     panX?: number;
     panY?: number;
@@ -30,6 +31,7 @@
     brightness = 100,
     contrast = 100,
     gamma = 100,
+    greyscale = false,
     zoomLevel = 100,
     panX = 0,
     panY = 0,
@@ -75,8 +77,8 @@
   }
 
   let filterStyle = $derived.by(() => {
-    if (brightness === 100 && contrast === 100) return "";
-    return `filter: brightness(${brightness}%) contrast(${contrast}%);`;
+    if (brightness === 100 && contrast === 100 && !greyscale) return "";
+    return `filter: brightness(${brightness}%) contrast(${contrast}%) grayscale(${greyscale ? 100 : 0}%);`;
   });
 
   function getFitClass(): string {

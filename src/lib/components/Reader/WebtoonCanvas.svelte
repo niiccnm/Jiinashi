@@ -20,6 +20,7 @@
     onInitialPositioned?: () => void | Promise<void>;
     brightness?: number;
     contrast?: number;
+    greyscale?: boolean;
     zoomLevel?: number;
     onContextMenu?: (index: number, e: MouseEvent) => void;
     onMoveWindow?: (x: number, y: number) => void;
@@ -53,6 +54,7 @@
     onInitialPositioned,
     brightness = 100,
     contrast = 100,
+    greyscale = false,
     zoomLevel = 100,
     onContextMenu,
     onMoveWindow,
@@ -795,7 +797,9 @@
   bind:this={container}
   data-webtoon-canvas
   class="flex-1 overflow-auto w-full h-full bg-black select-none"
-  style="filter: brightness({brightness}%) contrast({contrast}%); touch-action: none; cursor: {dragGesture?.mode === 'scroll'
+  style="filter: brightness({brightness}%) contrast({contrast}%) grayscale({greyscale
+    ? 100
+    : 0}%); touch-action: none; cursor: {dragGesture?.mode === 'scroll'
     ? 'grabbing'
     : dragGesture?.mode === 'window'
       ? 'move'

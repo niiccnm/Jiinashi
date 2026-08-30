@@ -19,6 +19,23 @@ function attachDevtoolsToggle(win: BrowserWindow, isDev: boolean) {
   });
 }
 
+function attachReaderShortcuts(win: BrowserWindow) {
+  win.webContents.on("before-input-event", (event, input) => {
+    const isGreyscaleShortcut =
+      input.control &&
+      input.shift &&
+      !input.alt &&
+      input.key.toLowerCase() === "c";
+
+    if (!isGreyscaleShortcut) return;
+
+    event.preventDefault();
+    if (input.type === "keyDown" && !input.isAutoRepeat) {
+      win.webContents.send("reader:toggle-greyscale");
+    }
+  });
+}
+
 function loadWindow(win: BrowserWindow, isDev: boolean, query?: Record<string, string>) {
   if (isDev) {
     if (!query) {
@@ -116,6 +133,7 @@ export function createReaderWindow(
   });
 
   attachDevtoolsToggle(win, isDev);
+  attachReaderShortcuts(win);
 
   const query: Record<string, string> = {
     view: "reader",

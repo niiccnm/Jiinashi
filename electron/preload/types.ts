@@ -446,6 +446,7 @@ export interface ReaderAPI {
     hidden: boolean,
   ) => Promise<boolean>;
   onFullscreenChange: (callback: (isFullscreen: boolean) => void) => () => void;
+  onToggleGreyscale: (callback: () => void) => () => void;
 }
 
 // Main API contract for the renderer

@@ -69,6 +69,8 @@ export function createMiscBridge(
         invoke("reader:setPageVisibility", itemId, pageName, hidden),
       onFullscreenChange: (callback: (isFullscreen: boolean) => void) =>
         on("window:fullscreen-change", callback),
+      onToggleGreyscale: (callback: () => void) =>
+        on("reader:toggle-greyscale", callback),
     },
     window: {
       show: () => invoke("window:show"),

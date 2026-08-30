@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Reader Greyscale Mode**: Added a neutral greyscale display filter for pages in Single Page, Double Page, and Webtoon modes.
+  - **Controls**: Can be toggled from the reader settings panel or with `Ctrl+Shift+C`; resetting Image Display also turns it off.
+  - **Image Fidelity**: Removes color without adding contrast, shifting brightness, clipping tones, or modifying the source image.
+  - **Files Modified**: `electron/app-windows.ts`, `electron/preload/bridge-misc.ts`, `electron/preload/types.ts`, `src/lib/components/Reader/ReaderSettings.svelte`, `src/lib/components/Reader/SinglePageCanvas.svelte`, `src/lib/components/Reader/DoublePageCanvas.svelte`, `src/lib/components/Reader/WebtoonCanvas.svelte`, `src/lib/views/Reader.svelte`.
+
+### Changed
+
+- **Reader Settings Panel**: Redesigned the reader settings panel with a cleaner layout and faster, smoother transitions while preserving the reader's existing behavior.
+  - **Page Layout and Sizing**: Added visual previews for page layout and sizing options.
+  - **Reading Direction**: Replaced the Manga Mode toggle with explicit left-to-right and right-to-left choices.
+  - **Image Display Controls**: Added editable values and individual reset buttons for brightness, contrast, and gamma.
+  - **Reader Interaction**: The panel handles its own wheel and drag scrolling while image zooming, panning, and middle-click reset remain available outside it.
+  - **Files Modified**: `src/lib/components/Reader/ReaderSettings.svelte`, `src/lib/views/Reader.svelte`.
+
+### Deprecated
+- Soon-to-be removed features
+
+### Removed
+- Now removed features
+
+### Fixed
+- Bug fixes
+
+### Security
+- Vulnerability fixes
+
+---
+
 ## [v0.0.3] - 2026-08-29
 
 ### Added
