@@ -38,12 +38,16 @@ function attachReaderShortcuts(win: BrowserWindow) {
 
 function loadWindow(win: BrowserWindow, isDev: boolean, query?: Record<string, string>) {
   if (isDev) {
-    if (!query) {
-      win.loadURL("http://localhost:5173");
-      return;
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    if (!devServerUrl) {
+      throw new Error("VITE_DEV_SERVER_URL is missing in development mode");
     }
-    const queryStr = new URLSearchParams(query).toString();
-    win.loadURL(`http://localhost:5173?${queryStr}`);
+
+    const url = new URL(devServerUrl);
+    for (const [key, value] of Object.entries(query ?? {})) {
+      url.searchParams.set(key, value);
+    }
+    win.loadURL(url.toString());
     return;
   }
 

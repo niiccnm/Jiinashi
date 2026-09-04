@@ -1,13 +1,7 @@
 <script lang="ts">
+  import { onMount, type Component } from "svelte";
   import Library from "./lib/views/Library.svelte";
-  import Reader from "./lib/views/Reader.svelte";
-  import Favorites from "./lib/views/Favorites.svelte";
-  import Recent from "./lib/views/Recent.svelte";
-  import Settings from "./lib/views/Settings.svelte";
-  import Tags from "./lib/views/Tags.svelte";
   import About from "./lib/views/About.svelte";
-  import Downloader from "./lib/views/Downloader.svelte";
-  import DownloadLogs from "./lib/views/DownloadLogs.svelte";
   import ToastNotification from "./lib/components/ToastNotification.svelte";
   import UpdateNotification from "./lib/components/UpdateNotification.svelte";
   import { toasts } from "./lib/stores/toast";
@@ -23,10 +17,80 @@
   } from "./lib/stores/app";
   import type { View } from "./lib/stores/app";
   import type { ReaderBootstrapOverrides } from "./lib/utils/manga";
+  import {
+    DEFAULT_CONTENT_FILTER_SETTINGS,
+    parseContentFilterSettings,
+    type ContentFilterSettings,
+  } from "./lib/utils/content-filter";
+
+  type ViewModule = { default: Component<any> };
+
+  const viewLoaders: Partial<Record<View, () => Promise<ViewModule>>> = {
+    reader: () => import("./lib/views/Reader.svelte"),
+    favorites: () => import("./lib/views/Favorites.svelte"),
+    recent: () => import("./lib/views/Recent.svelte"),
+    settings: () => import("./lib/views/Settings.svelte"),
+    tags: () => import("./lib/views/Tags.svelte"),
+    downloader: () => import("./lib/views/Downloader.svelte"),
+    download_logs: () => import("./lib/views/DownloadLogs.svelte"),
+  };
+
+  let viewComponents = $state<Partial<Record<View, Component<any>>>>({
+    library: Library,
+  });
+  let unreadyViews = $state<View[]>([
+    "library",
+    "favorites",
+    "downloader",
+    "recent",
+  ]);
+
+  function markViewReady(target: View) {
+    if (!unreadyViews.includes(target)) return;
+    unreadyViews = unreadyViews.filter((view) => view !== target);
+  }
+
+  async function loadView(target: View) {
+    if (viewComponents[target]) return;
+    const loader = viewLoaders[target];
+    // import() already caches modules and coalesces concurrent requests.
+    if (loader) viewComponents[target] = (await loader()).default;
+  }
+
+  async function preloadPrimaryViews() {
+    const primaryViews: View[] = [
+      "favorites",
+      "downloader",
+      "recent",
+      "settings",
+      "tags",
+    ];
+    for (const target of primaryViews) {
+      await new Promise<void>((resolve) =>
+        requestIdleCallback(() => resolve(), { timeout: 2000 }),
+      );
+      try {
+        // Favorites, Downloader, and Recent load their data while hidden.
+        await loadView(target);
+      } catch (error) {
+        console.error(`Failed to preload the ${target} view:`, error);
+      }
+    }
+  }
+
+  function waitForPaint(): Promise<void> {
+    return new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  }
 
   let view = $state<View>("library");
+  let requestedView = $state<View>("library");
   let currentBook = $state<any>(null);
   let showAbout = $state(false);
+  let contentFilter = $state<ContentFilterSettings>({
+    ...DEFAULT_CONTENT_FILTER_SETTINGS,
+  });
 
   // Try to get initial width synchronously from localStorage to avoid flashing
   const cachedWidth =
@@ -35,6 +99,46 @@
 
   let isResizing = $state(false);
   let isInitialLoad = $state(true);
+  let initialSettingsReady = $state(false);
+  const params = new URLSearchParams(window.location.search);
+  const viewParam = params.get("view");
+  const initialView: View =
+    viewParam === "reader" || viewParam === "download_logs"
+      ? viewParam
+      : "library";
+
+  // Reader shows its own window, so its toasts bypass this queue.
+  let toastWindowReady = initialView === "reader";
+  const pendingToasts: Parameters<typeof toasts.add>[] = [];
+
+  function addToast(...args: Parameters<typeof toasts.add>) {
+    if (toastWindowReady) toasts.add(...args);
+    else pendingToasts.push(args);
+  }
+
+  async function showWindow() {
+    await window.electronAPI.window.show();
+    toastWindowReady = true;
+    // Start the existing expiration timers only once the window is visible.
+    for (const args of pendingToasts.splice(0)) toasts.add(...args);
+  }
+
+  $effect(() => {
+    const target = requestedView;
+    if (!viewComponents[target] || unreadyViews.includes(target)) return;
+    view = target;
+
+    if (!isInitialLoad || !initialSettingsReady || target !== initialView) return;
+
+    isInitialLoad = false;
+    // Reader shows its window after loading the requested book and page.
+    if (initialView === "reader") return;
+    void waitForPaint()
+      .then(showWindow)
+      .then(() => {
+        if (initialView === "library") void preloadPrimaryViews();
+      });
+  });
 
   // Snap points and friction
   const SNAP_ICON = 64;
@@ -71,13 +175,18 @@
     return Object.keys(overrides).length > 0 ? overrides : null;
   }
 
-  $effect(() => {
+  onMount(() => {
     // Check for query params (Reader Window Mode)
-    const params = new URLSearchParams(window.location.search);
-    const viewParam = params.get("view");
     const bookId = params.get("bookId");
 
     const taskId = params.get("taskId");
+
+    void loadView(initialView).catch((error) => {
+      console.error(`Failed to load the ${initialView} view:`, error);
+      addToast("Failed to open this window. Please close it and try again.", "error");
+      isInitialLoad = false;
+      void showWindow();
+    });
 
     if (viewParam === "download_logs" && taskId) {
       appState.update((s) => ({
@@ -85,8 +194,6 @@
         currentView: "download_logs",
         currentBook: null,
       }));
-
-      // Auxiliary window; show/fade handled in settings block
     }
 
     if (viewParam === "reader" && bookId) {
@@ -111,67 +218,40 @@
       });
     }
 
-    // In auxiliary windows (like download logs), Electron APIs may not be ready the same way as the main window.
-    // Never leave the whole UI stuck invisible.
-    const failSafe = setTimeout(() => {
-      isInitialLoad = false;
-    }, 1200);
-
-    window.electronAPI.settings
-      .get("sidebarWidth")
-      .then((val) => {
-        if (val) {
-          const w = parseInt(val);
-          if (!isNaN(w)) {
-            sidebarWidth = w;
-            appState.update((s) => ({ ...s, sidebarWidth: w }));
-          }
+    async function loadInitialSettings() {
+      try {
+        if (initialView !== "library") return;
+        const settings = await window.electronAPI.settings.getAll();
+        contentFilter = parseContentFilterSettings(settings);
+        const width = Number.parseInt(settings?.sidebarWidth ?? "", 10);
+        if (Number.isFinite(width)) {
+          sidebarWidth = width;
+          appState.update((s) => ({ ...s, sidebarWidth: width }));
         }
+      } catch (error) {
+        console.error("Failed to load the initial window settings:", error);
+      } finally {
+        initialSettingsReady = true;
+      }
+    }
 
-        // Show sequence for auxiliary windows to prevent flash
-        const isAuxiliary = !!viewParam;
-        if (viewParam === "reader") {
-          isInitialLoad = false;
-          return;
-        }
-
-        // Show window during dark loading state to prevent native white flash (v10)
-        setTimeout(
-          async () => {
-            // Ensure browser has painted at least one dark frame
-            await new Promise((r) => requestAnimationFrame(r));
-            await new Promise((r) => requestAnimationFrame(r));
-
-            // Native Show
-            window.electronAPI.window.show();
-
-            // Wait a bit more for window manager to settle before fading in UI
-            setTimeout(
-              () => {
-                isInitialLoad = false;
-              },
-              isAuxiliary ? 50 : 150,
-            );
-          },
-          isAuxiliary ? 150 : 500,
-        );
-      })
-      .catch(() => {
-        isInitialLoad = false;
-      })
-      .finally(() => {
-        clearTimeout(failSafe);
-      });
+    void loadInitialSettings();
 
     const unsubscribe = appState.subscribe((state) => {
-      view = state.currentView;
+      requestedView = state.currentView;
       currentBook = state.currentBook;
+      // The startup load above already handles errors for this view.
+      if (state.currentView === initialView) return;
+      void loadView(state.currentView).catch((error) => {
+        console.error(`Failed to load the ${state.currentView} view:`, error);
+        addToast("Failed to open this page. Please close and reopen Jiinashi.", "error");
+      });
     });
-    const unsubscribeAppToast = window.electronAPI.notifications.onToast(
-      (message, type) => {
-        toasts.add(message, type);
-      },
-    );
+    const unsubscribeAppToast = window.electronAPI.notifications.onToast(addToast);
+    const unsubscribeDownloaderToast =
+      initialView === "download_logs"
+        ? undefined
+        : window.electronAPI.downloader.onToast(addToast);
 
     const handleMouseDown = (e: MouseEvent) => {
       // If in reader mode, let the Reader component handle navigation
@@ -248,6 +328,8 @@
     return () => {
       unsubscribe();
       unsubscribeAppToast();
+      unsubscribeDownloaderToast?.();
+      pendingToasts.length = 0;
       window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
@@ -272,9 +354,7 @@
 <div
   class="h-screen w-screen flex bg-gray-950 text-gray-100 font-sans overflow-hidden {isInitialLoad
     ? 'no-animations opacity-0'
-    : view === 'reader'
-      ? 'opacity-100'
-      : 'opacity-100 transition-opacity duration-300'} {isResizing
+    : 'opacity-100'} {isResizing
     ? 'is-resizing'
     : ''}"
 >
@@ -633,14 +713,21 @@
   <!-- Main Content -->
   <main class="flex-1 flex flex-col overflow-hidden">
     {#if view === "download_logs"}
-      <DownloadLogs />
+      {#if viewComponents.download_logs}
+        {@const DownloadLogsView = viewComponents.download_logs}
+        <DownloadLogsView />
+      {/if}
     {:else}
       <!-- Library View (Always mounted, hidden via CSS when not active) -->
       <div
         style="display: {view === 'library' ? 'flex' : 'none'}"
         class="h-full flex-col"
       >
-        <Library />
+        <Library
+          active={view === "library"}
+          {contentFilter}
+          onReady={() => markViewReady("library")}
+        />
       </div>
 
       <!-- Favorites View (Now persisted) -->
@@ -648,7 +735,14 @@
         style="display: {view === 'favorites' ? 'flex' : 'none'}"
         class="h-full flex-col"
       >
-        <Favorites />
+        {#if viewComponents.favorites}
+          {@const FavoritesView = viewComponents.favorites}
+          <FavoritesView
+            active={view === "favorites"}
+            {contentFilter}
+            onReady={() => markViewReady("favorites")}
+          />
+        {/if}
       </div>
 
       <!-- Downloader View (Persisted) -->
@@ -656,23 +750,38 @@
         style="display: {view === 'downloader' ? 'flex' : 'none'}"
         class="h-full flex-col"
       >
-        <Downloader />
+        {#if viewComponents.downloader}
+          {@const DownloaderView = viewComponents.downloader}
+          <DownloaderView
+            active={view === "downloader"}
+            onReady={() => markViewReady("downloader")}
+          />
+        {/if}
       </div>
 
       <div
         style="display: {view === 'recent' ? 'flex' : 'none'}"
         class="h-full flex-col"
       >
-        <Recent active={view === "recent"} />
+        {#if viewComponents.recent}
+          {@const RecentView = viewComponents.recent}
+          <RecentView
+            active={view === "recent"}
+            {contentFilter}
+            onReady={() => markViewReady("recent")}
+          />
+        {/if}
       </div>
 
-      <!-- Other views still use conditional rendering as they might not need state preservation or are lighter -->
-      {#if view === "reader" && currentBook}
-        <Reader book={currentBook} />
-      {:else if view === "settings"}
-        <Settings />
-      {:else if view === "tags"}
-        <Tags />
+      {#if view === "reader" && currentBook && viewComponents.reader}
+        {@const ReaderView = viewComponents.reader}
+        <ReaderView book={currentBook} />
+      {:else if view === "settings" && viewComponents.settings}
+        {@const SettingsView = viewComponents.settings}
+        <SettingsView />
+      {:else if view === "tags" && viewComponents.tags}
+        {@const TagsView = viewComponents.tags}
+        <TagsView />
       {/if}
     {/if}
   </main>

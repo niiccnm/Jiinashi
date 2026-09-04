@@ -13,6 +13,9 @@
   }
 
   let sessionSnapshot: MetadataBrowserSessionSnapshot | null = null;
+  // Keep request IDs across Manga tab remounts to reject stale results.
+  let resultsRequestId = 0;
+  let pendingResultsReset: boolean | null = null;
 
   function getSessionSnapshot() {
     if (!sessionSnapshot) return null;
@@ -59,11 +62,22 @@
   let searchQuery = $state("");
   let searchResults = $state.raw<any[]>([]);
   let isLoading = $state(false);
+  let initialLoading = $state(true);
+  let showLoadingSpinner = $state(false);
   let activeTab = $state<MetadataBrowserTab>("trending");
   let page = $state(1);
   let hasNextPage = $state(true);
   let searchTimeout = $state<any>(null);
   let seriesTitleStyle = $state<SeriesTitleStyle>("romaji");
+  const INITIAL_COVER_COUNT = 8;
+  const INITIAL_COVER_TIMEOUT_MS = 750;
+
+  $effect(() => {
+    showLoadingSpinner = false;
+    if (!isLoading) return;
+    const timeout = setTimeout(() => (showLoadingSpinner = true), 200);
+    return () => clearTimeout(timeout);
+  });
 
   function persistSessionSnapshot() {
     setSessionSnapshot({
@@ -339,6 +353,34 @@
     return manga?.coverImage?.extraLarge || manga?.coverImage?.large;
   }
 
+  function preloadCover(src: string): Promise<void> {
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.decoding = "async";
+      image.referrerPolicy = "no-referrer";
+      let timeout: ReturnType<typeof setTimeout>;
+      const finish = () => {
+        clearTimeout(timeout);
+        image.onload = null;
+        image.onerror = null;
+        resolve();
+      };
+
+      image.onload = finish;
+      image.onerror = finish;
+      timeout = setTimeout(finish, INITIAL_COVER_TIMEOUT_MS);
+      image.src = src;
+    });
+  }
+
+  async function preloadInitialCovers() {
+    const sources = searchResults
+      .slice(0, INITIAL_COVER_COUNT)
+      .map(getCoverUrl)
+      .filter((src): src is string => Boolean(src));
+    await Promise.all(sources.map(preloadCover));
+  }
+
   function getSubtitle(manga: any) {
     const status = formatMangaStatus(manga?.status);
     if (String(manga?.provider || "").toLowerCase() === "mangabaka") {
@@ -399,6 +441,8 @@
 
   // --- Methods ---
   async function refreshResults(resetPage = true, force = false) {
+    const requestId = ++resultsRequestId;
+    pendingResultsReset = resetPage;
     if (force) {
       clearTimeout(searchTimeout);
     }
@@ -410,12 +454,14 @@
 
     try {
       await refreshSeriesTitleStyle();
+      if (requestId !== resultsRequestId) return;
       let res;
       if (activeTab === "search" && searchQuery) {
         const [anilistResult, mangabakaResult] = await Promise.allSettled([
           window.electronAPI.manga.anilistSearch(searchQuery, page),
           window.electronAPI.manga.mangabakaSearch(searchQuery, page, 10),
         ]);
+        if (requestId !== resultsRequestId) return;
 
         const anilistMedia =
           anilistResult.status === "fulfilled" &&
@@ -452,6 +498,7 @@
       } else {
         res = await window.electronAPI.manga.anilistPopular(page);
       }
+      if (requestId !== resultsRequestId) return;
 
       if (res && res.media) {
         const mapped = res.media.map(normalizeAnilistMedia);
@@ -468,6 +515,7 @@
       }
       persistSessionSnapshot();
     } catch (e) {
+      if (requestId !== resultsRequestId) return;
       console.error("Failed to load results:", e);
       toasts.add("Downloader: Failed to fetch metadata results.", "error");
       if (resetPage) {
@@ -475,7 +523,15 @@
       }
       persistSessionSnapshot();
     } finally {
-      isLoading = false;
+      if (requestId === resultsRequestId) {
+        pendingResultsReset = null;
+        isLoading = false;
+        if (initialLoading) {
+          // Only the latest request may show the initial results.
+          await preloadInitialCovers();
+          if (requestId === resultsRequestId) initialLoading = false;
+        }
+      }
     }
   }
 
@@ -514,9 +570,13 @@
 
   // --- Lifecycle ---
   onMount(async () => {
-    const restored = restoreSessionSnapshot();
-    await refreshSeriesTitleStyle();
-    if (restored) {
+    if (restoreSessionSnapshot()) {
+      initialLoading = false;
+      if (pendingResultsReset !== null) {
+        await refreshResults(pendingResultsReset);
+      } else {
+        await refreshSeriesTitleStyle();
+      }
       return;
     }
     await refreshResults();
@@ -590,7 +650,7 @@
             onkeydown={(e) => e.key === "Enter" && handleSearch()}
           />
 
-          {#if isLoading}
+          {#if isLoading && showLoadingSpinner}
             <div
               class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"
             ></div>
@@ -640,7 +700,7 @@
   </div>
 
   <!-- Results Grid -->
-  {#if searchResults.length === 0 && !isLoading}
+  {#if !initialLoading && searchResults.length === 0 && !isLoading}
     <div
       class="flex flex-col items-center justify-center py-20 bg-slate-900/20 rounded-3xl border border-dashed border-slate-800"
       in:fade
@@ -649,7 +709,7 @@
         No results found on AniList or Mangabaka
       </p>
     </div>
-  {:else}
+  {:else if !initialLoading}
     <div
       class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-6"
     >

@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Cover Loading Safety**: Prevented stale cover requests from restoring released data or clearing newer loading state, and removed redundant full-cache updates that contributed to intermittent scroll stalls.
   - **Files Modified**: `src/App.svelte`, `src/lib/views/Recent.svelte`.
 
+- **Application Startup and Page Readiness**: Reduced startup delays and loading flashes when switching pages.
+  - **Development Startup**: Restricted Vite dependency scanning to the app, skipped archives and `.tmp` when watching files, preloaded initial modules, and used Vite's actual server URL.
+  - **Electron Build**: Reused installed dependency files instead of bundling their code again into Electron's main script.
+  - **Deferred Views**: Loaded secondary pages on demand and preloaded common page modules after Library appears.
+  - **Stable Page Rendering**: Applied R18 filter settings before the initial window appears and waited for initial local data before showing Library, Favorites, Recent, or Downloader.
+  - **Manga Loading Feedback**: Briefly preloaded initial covers and delayed the search spinner by 200 ms to reduce flashes. Online metadata loading does not block Downloader controls.
+  - **Downloader Notifications**: Registered download notifications at startup and held early toasts until the main window appears.
+  - **Reliability and Cleanup**: Added tests for startup, page loading, metadata requests, and notifications. Removed unused code.
+  - **Files Created**: `scripts/test-view-startup.cjs`, `src/lib/utils/content-filter.ts`.
+  - **Files Modified**: `electron/app-windows.ts`, `package.json`, `src/App.svelte`, `src/lib/components/manga/MetadataBrowser.svelte`, `src/lib/views/Downloader.svelte`, `src/lib/views/Favorites.svelte`, `src/lib/views/Library.svelte`, `src/lib/views/Recent.svelte`, `vite.config.ts`.
+
 ### Security
 - Vulnerability fixes
 

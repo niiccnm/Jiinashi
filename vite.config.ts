@@ -2,9 +2,27 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import electron from "vite-plugin-electron/simple";
 import path from "path";
+import packageJson from "./package.json";
+
+const runtimeDependencies = Object.keys(packageJson.dependencies);
+const isRuntimeDependency = (id: string) =>
+  runtimeDependencies.some(
+    (dependency) => id === dependency || id.startsWith(`${dependency}/`),
+  );
 
 export default defineConfig({
   base: "./",
+  // Skip archived and packaged HTML entry points during dependency scanning.
+  optimizeDeps: { entries: ["./index.html"] },
+  server: {
+    strictPort: true,
+    watch: {
+      ignored: ["**/versions/**", "**/.tmp/**"],
+    },
+    warmup: {
+      clientFiles: ["./src/main.ts", "./src/lib/views/Library.svelte"],
+    },
+  },
   plugins: [
     {
       name: "html-csp-injection",
@@ -27,7 +45,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ["better-sqlite3", "sharp", "bytenode"],
+              external: isRuntimeDependency,
             },
           },
         },

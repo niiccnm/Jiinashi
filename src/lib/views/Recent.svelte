@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { fade } from "svelte/transition";
   import { openBook } from "../stores/app";
   import type { LibraryItem } from "../stores/app";
@@ -9,8 +9,20 @@
   import MoveToFolderDialog from "../components/MoveToFolderDialog.svelte";
   import LibraryMetadataDialogs from "../components/Library/LibraryMetadataDialogs.svelte";
   import { toasts } from "../stores/toast";
+  import {
+    parseContentFilterSettings,
+    type ContentFilterSettings,
+  } from "../utils/content-filter";
 
-  let { active = true }: { active?: boolean } = $props();
+  let {
+    active = true,
+    contentFilter,
+    onReady,
+  }: {
+    active?: boolean;
+    contentFilter: ContentFilterSettings;
+    onReady?: () => void;
+  } = $props();
 
   const COVER_CACHE_RELEASE_DELAY_MS = 5_000;
 
@@ -21,9 +33,20 @@
   let loadingCovers = $state<Set<number>>(new Set());
   let coverCacheGeneration = 0;
   let refreshTimer: any = null;
-  let blurR18 = $state(false);
-  let blurR18Hover = $state(false);
-  let blurR18Intensity = $state(12);
+  let blurR18 = $state(untrack(() => contentFilter.blurR18));
+  let blurR18Hover = $state(untrack(() => contentFilter.blurR18Hover));
+  let blurR18Intensity = $state(
+    untrack(() => contentFilter.blurR18Intensity),
+  );
+
+  $effect(() => {
+    const next = contentFilter;
+    untrack(() => {
+      blurR18 = next.blurR18;
+      blurR18Hover = next.blurR18Hover;
+      blurR18Intensity = next.blurR18Intensity;
+    });
+  });
   let activeMenuId = $state<number | null>(null);
   let managingArchiveItem = $state<LibraryItem | null>(null);
   let moveItem = $state<LibraryItem | null>(null);
@@ -102,11 +125,10 @@
     try {
       const all = await window.electronAPI.settings.getAll();
       if (all) {
-        blurR18 = all.blurR18 === "true";
-        blurR18Hover = all.blurR18Hover === "true";
-        blurR18Intensity = all.blurR18Intensity
-          ? parseInt(all.blurR18Intensity)
-          : 12;
+        const nextFilter = parseContentFilterSettings(all);
+        blurR18 = nextFilter.blurR18;
+        blurR18Hover = nextFilter.blurR18Hover;
+        blurR18Intensity = nextFilter.blurR18Intensity;
       }
     } catch (e) {
       console.error("Failed to refresh settings", e);
@@ -310,7 +332,10 @@
   }
 
   onMount(() => {
-    loadRecent();
+    void Promise.allSettled([loadRecent(), refreshSettings()]).then(async () => {
+      await tick();
+      onReady?.();
+    });
     const unsubscribe = window.electronAPI.library.onItemUpdated(
       async (payload) => {
         const existingIndex = items.findIndex((i) => i.id === payload.id);
@@ -364,11 +389,16 @@
     const unsubscribeCleared = window.electronAPI.library.onCleared(() => {
       loadRecent(true);
     });
+    const unsubscribeDeleted = window.electronAPI.library.onItemsDeleted(() => {
+      // Folder deletion events omit child IDs, so reload the list.
+      loadRecent(true);
+    });
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       unsubscribe();
       unsubscribeRefreshed();
       unsubscribeCleared();
+      unsubscribeDeleted();
     };
   });
 </script>

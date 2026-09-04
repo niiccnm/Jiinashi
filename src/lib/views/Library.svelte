@@ -21,6 +21,10 @@
   import { toasts } from "../stores/toast";
   import type { LibraryItem } from "../stores/app";
   import type { MangaPreference } from "../utils/manga";
+  import {
+    parseContentFilterSettings,
+    type ContentFilterSettings,
+  } from "../utils/content-filter";
   import type {
     MlvChapterActions,
     MlvSelectionContext,
@@ -352,6 +356,16 @@
     );
   }
 
+  let {
+    active,
+    contentFilter,
+    onReady,
+  }: {
+    active: boolean;
+    contentFilter: ContentFilterSettings;
+    onReady?: () => void;
+  } = $props();
+
   function parseCacheKey(key: string): {
     root: string;
     folderId: number | null;
@@ -441,10 +455,8 @@
 
   let searchQuery = $state("");
   let searchResults = $state<LibraryItem[]>([]); // New state for global results
-  let isSearching = $state(false);
 
   const selection = new SelectionModel();
-  let lastSelectedId = $state<number | null>(null);
   let gridSize = $state<"small" | "medium" | "large">(
     (typeof localStorage !== "undefined" &&
       (localStorage.getItem("libraryGridSize") as any)) ||
@@ -457,9 +469,20 @@
   let renderLimit = $state(50);
   let loaderRef = $state<HTMLElement | null>(null);
 
-  let blurR18 = $state(false);
-  let blurR18Hover = $state(false);
-  let blurR18Intensity = $state(12);
+  let blurR18 = $state(untrack(() => contentFilter.blurR18));
+  let blurR18Hover = $state(untrack(() => contentFilter.blurR18Hover));
+  let blurR18Intensity = $state(
+    untrack(() => contentFilter.blurR18Intensity),
+  );
+
+  $effect(() => {
+    const next = contentFilter;
+    untrack(() => {
+      blurR18 = next.blurR18;
+      blurR18Hover = next.blurR18Hover;
+      blurR18Intensity = next.blurR18Intensity;
+    });
+  });
 
   let lastResetFolderId = $state<number | null>(null);
   let lastResetSearchQuery = $state("");
@@ -580,6 +603,8 @@
         if (isFirstRootLoad) {
           loading = false;
           hasInitializedRootView = true;
+          await tick();
+          onReady?.();
         }
       }
       refreshGlobalCount();
@@ -653,17 +678,14 @@
     try {
       const all = await window.electronAPI.settings.getAll();
       if (all) {
-        const newBlurR18 = all.blurR18 === "true";
-        const newBlurR18Hover = all.blurR18Hover === "true";
-        const newBlurR18Intensity = all.blurR18Intensity
-          ? parseInt(all.blurR18Intensity)
-          : 12;
+        const nextFilter = parseContentFilterSettings(all);
 
         // Surgical updates to avoid unnecessary item card re-renders
-        if (blurR18 !== newBlurR18) blurR18 = newBlurR18;
-        if (blurR18Hover !== newBlurR18Hover) blurR18Hover = newBlurR18Hover;
-        if (blurR18Intensity !== newBlurR18Intensity)
-          blurR18Intensity = newBlurR18Intensity;
+        if (blurR18 !== nextFilter.blurR18) blurR18 = nextFilter.blurR18;
+        if (blurR18Hover !== nextFilter.blurR18Hover)
+          blurR18Hover = nextFilter.blurR18Hover;
+        if (blurR18Intensity !== nextFilter.blurR18Intensity)
+          blurR18Intensity = nextFilter.blurR18Intensity;
 
         if (
           all.librarySortOrder === "alphabetical" ||
@@ -704,7 +726,6 @@
         selectedRoot = "";
         itemsCache.clear();
         pendingItems = [];
-        realTotalScanned = 0;
         totalScanned = 0;
         lastScannedItem = null;
         lastScannedCover = null;
@@ -898,7 +919,7 @@
   }
 
   function handleGlobalKeydown(e: any) {
-    if ($appState.currentView !== "library") return;
+    if (!active) return;
 
     // Keyboard Shortcuts
     if (
@@ -1685,7 +1706,6 @@
   let lastScannedCover = $state<string | null>(null);
   let totalScanned = $state(0);
   let pendingItems: LibraryItem[] = [];
-  let realTotalScanned = 0;
 
   $effect(() => {
     const unsubscribe = window.electronAPI.library.onItemAdded((item) => {
@@ -1809,7 +1829,6 @@
         if (!isScanning) return;
 
         totalScanned = count;
-        realTotalScanned = count;
 
         if (item) {
           lastScannedItem = item;
@@ -1842,7 +1861,6 @@
     if (selectedPath) {
       isScanning = true;
       totalScanned = 0;
-      realTotalScanned = 0;
       lastScannedItem = null;
       lastScannedCover = null;
       pendingItems = [];
@@ -1875,7 +1893,6 @@
   async function handleRescan() {
     isScanning = true;
     totalScanned = 0;
-    realTotalScanned = 0;
     lastScannedItem = null;
     lastScannedCover = null;
     pendingItems = [];
@@ -1947,17 +1964,12 @@
       lastProcessedQuery = q;
 
       searchTimeout = setTimeout(async () => {
-        isSearching = true;
-        try {
-          const results = await window.electronAPI.library.search(q, {
-            folderId: f,
-            root: f ? undefined : r,
-          });
-          if (q === searchQuery) {
-            searchResults = results;
-          }
-        } finally {
-          isSearching = false;
+        const results = await window.electronAPI.library.search(q, {
+          folderId: f,
+          root: f ? undefined : r,
+        });
+        if (q === searchQuery) {
+          searchResults = results;
         }
       }, delay);
     } else {
@@ -2230,7 +2242,7 @@
   }
 
   function handleLibraryMouseButtons(e: MouseEvent) {
-    if ($appState.currentView !== "library") return;
+    if (!active) return;
 
     // Cancel a pending folder open before App.svelte handles mouse Back.
     if (e.button === 3) {
@@ -2349,7 +2361,7 @@
   allIds={bulkSelectableIds}
   mangaFolders={selectedMangaFolders}
   {menuCloseEpoch}
-  view={$appState?.currentView === "favorites" ? "favorites" : "library"}
+  view="library"
   onRefresh={handleBulkRefresh}
   onSetMangaPreference={setSelectedMangaPreference}
   onMove={() => {

@@ -19,6 +19,11 @@
     MangaQueueItem,
   } from "../../../electron/preload/types";
 
+  let {
+    active,
+    onReady,
+  }: { active: boolean; onReady?: () => void } = $props();
+
   // --- State ---
   let downloadUrl = $state("");
   let queue = $state<DownloaderQueueItem[]>([]);
@@ -377,7 +382,7 @@
   }
 
   async function handleMouseSideNavigation(e: MouseEvent) {
-    if ($appState.currentView !== "downloader" || mode !== "manga") return;
+    if (!active || mode !== "manga") return;
 
     if (e.button === 3) {
       if (mangaNavIndex > 0) {
@@ -486,12 +491,7 @@
   });
 
   async function handleGlobalKeydown(e: KeyboardEvent) {
-    if (
-      (e.key !== "F5" && e.code !== "F5") ||
-      $appState.currentView !== "downloader"
-    ) {
-      return;
-    }
+    if (!active || (e.key !== "F5" && e.code !== "F5")) return;
     if (mode !== "manga") return;
 
     e.preventDefault();
@@ -504,7 +504,6 @@
 
   let unsubscribe: (() => void) | null = null;
   let unsubscribeManga: (() => void) | null = null;
-  let unsubscribeToasts: (() => void) | null = null;
   let historyRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
   let historyRefreshInFlight = false;
   let historyRefreshQueued = false;
@@ -803,17 +802,13 @@
       },
     );
 
-    unsubscribeToasts = window.electronAPI.downloader.onToast(
-      (message: string, type: "success" | "error" | "info") => {
-        toasts.add(message, type);
-      },
-    );
+    await tick();
+    onReady?.();
   });
 
   onDestroy(() => {
     if (unsubscribe) unsubscribe();
     if (unsubscribeManga) unsubscribeManga();
-    if (unsubscribeToasts) unsubscribeToasts();
     if (historyRefreshTimeout) {
       clearTimeout(historyRefreshTimeout);
       historyRefreshTimeout = null;
