@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
+  import { anchoredMenu } from "../../../utils/anchoredMenu";
   import type { LibraryItem } from "../../../stores/app";
   import { handleSelectionMouseDown } from "../../../state/selection.svelte";
   import type { MlvChapterActions, MlvSelectionContext } from "./mlv-types";
@@ -325,7 +326,10 @@
                 ? 'bg-black/60 text-white opacity-100'
                 : 'bg-black/40 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-white hover:bg-black/60'}"
               onclick={(e) => toggleMenu(itemId, e)}
-              onkeydown={(e) => e.stopPropagation()}
+              onkeydown={(e) => {
+                handleWindowKeydown(e);
+                e.stopPropagation();
+              }}
               ondblclick={(e) => e.stopPropagation()}
             >
               <svg
@@ -345,11 +349,15 @@
 
             {#if activeMenuItemId === itemId}
               <div
-                class="absolute left-0 top-full mt-1 w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden text-left"
+                use:anchoredMenu
+                class="fixed w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 overflow-x-hidden text-left"
                 role="menu"
                 tabindex="-1"
                 onclick={(e) => e.stopPropagation()}
-                onkeydown={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  handleWindowKeydown(e);
+                  e.stopPropagation();
+                }}
                 transition:fade={{ duration: 100 }}
               >
                 <div class="p-1">
@@ -516,7 +524,10 @@
                 ? 'bg-black/60 text-white opacity-100'
                 : 'bg-black/40 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-white hover:bg-black/60'}"
               onclick={(e) => toggleMenu(itemId, e)}
-              onkeydown={(e) => e.stopPropagation()}
+              onkeydown={(e) => {
+                handleWindowKeydown(e);
+                e.stopPropagation();
+              }}
               ondblclick={(e) => e.stopPropagation()}
             >
               <svg
@@ -536,11 +547,15 @@
 
             {#if activeMenuItemId === itemId}
               <div
-                class="absolute left-0 top-full mt-1 w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden text-left"
+                use:anchoredMenu
+                class="fixed w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 overflow-x-hidden text-left"
                 role="menu"
                 tabindex="-1"
                 onclick={(e) => e.stopPropagation()}
-                onkeydown={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  handleWindowKeydown(e);
+                  e.stopPropagation();
+                }}
                 transition:fade={{ duration: 100 }}
               >
                 <div class="p-1">

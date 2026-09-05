@@ -12,14 +12,8 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { fade } from "svelte/transition";
+  import { anchoredMenu } from "../../utils/anchoredMenu";
   import type { SourceBadge } from "../manga/sourceCatalog";
-
-  interface Progress {
-    item: any;
-    current: number;
-    total: number;
-    percent: number;
-  }
 
   let {
     item,
@@ -55,11 +49,22 @@
 
   $effect(() => {
     if (isMenuOpen) {
-      const handleOutsideClick = () => {
+      const handleOutsideClick = (event: MouseEvent) => {
+        if (
+          event.target instanceof Element &&
+          event.target.closest("[data-download-menu]")
+        ) return;
         onToggleMenu(false);
       };
+      const handleKeydown = (event: KeyboardEvent) => {
+        if (event.key === "Escape") onToggleMenu(false);
+      };
       window.addEventListener("click", handleOutsideClick);
-      return () => window.removeEventListener("click", handleOutsideClick);
+      window.addEventListener("keydown", handleKeydown);
+      return () => {
+        window.removeEventListener("click", handleOutsideClick);
+        window.removeEventListener("keydown", handleKeydown);
+      };
     }
   });
 
@@ -311,7 +316,9 @@
 
       {#if isMenuOpen}
         <div
-          class="absolute right-0 mt-2 w-44 bg-slate-950/95 border border-slate-700/50 rounded-xl shadow-xl overflow-hidden z-50"
+          use:anchoredMenu={{ align: "right", gap: 8 }}
+          data-download-menu
+          class="fixed w-44 bg-slate-950/95 border border-slate-700/50 rounded-xl shadow-xl overflow-x-hidden z-50"
           transition:fade={{ duration: 120 }}
         >
           <button

@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Files Created**: `scripts/test-view-startup.cjs`, `src/lib/utils/content-filter.ts`.
   - **Files Modified**: `electron/app-windows.ts`, `package.json`, `src/App.svelte`, `src/lib/components/manga/MetadataBrowser.svelte`, `src/lib/views/Downloader.svelte`, `src/lib/views/Favorites.svelte`, `src/lib/views/Library.svelte`, `src/lib/views/Recent.svelte`, `vite.config.ts`.
 
+- **Three-Dot Menu Placement**: Fixed clipped options in the Downloader's Manga and Doujinshi queue and history lists, and in Manga library chapter menus.
+  - **Window Fit**: Menus open below the button when they fit and above it when needed, keeping options within the window in both chapter list and grid views.
+  - **Menu Scrolling and Dismissal**: Tall menus scroll internally without disappearing or dragging the page. Page scrolling closes the menu without moving it during the closing animation; clicking outside or pressing `Escape` also closes it.
+  - **Files Created**: `src/lib/utils/anchoredMenu.ts`.
+  - **Files Modified**: `src/lib/components/downloader/DownloadItem.svelte`, `src/lib/components/manga/library-view/mlv-chapter-section.svelte`.
+
 ### Security
 - Vulnerability fixes
 
