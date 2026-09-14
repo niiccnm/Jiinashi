@@ -1792,10 +1792,10 @@
           class="h-full flex flex-col items-center justify-center text-slate-600"
         >
           <div
-            class="w-16 h-16 bg-slate-900/50 rounded-2xl flex items-center justify-center mb-4 border border-slate-800"
+            class="w-16 h-16 mb-4 shrink-0 flex items-center justify-center"
           >
             <svg
-              class="w-8 h-8 text-slate-700"
+              class="w-16 h-16 text-slate-600"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"

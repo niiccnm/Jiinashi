@@ -55,6 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Files Created**: `src/lib/utils/anchoredMenu.ts`.
   - **Files Modified**: `src/lib/components/downloader/DownloadItem.svelte`, `src/lib/components/manga/library-view/mlv-chapter-section.svelte`.
 
+- **Library Filters and Grid Transitions**: Fixed standalone Library filters and improved grid transitions.
+  - **Standalone Filters**: Library type filters now work without a search and remain active when search text is cleared.
+  - **Filter Clicks**: Adjusted click timing to reduce flashes of intermediate results when double-clicking to exclude a type. Button selections update immediately; slower double-clicks can still briefly show intermediate results.
+  - **Card Animation**: Combined upward motion with a gentle fade in Library and Favorites, easing new items into view without starting from fully transparent cards.
+  - **Loading More Items**: Covers for the next batch preload as you approach the end of the list. New items animate into view when that batch appears, and inactive Library lists no longer trigger extra batches.
+  - **Cover Reuse**: Keeps a limited set of recently displayed covers ready for reuse, reducing reloading and flashing when clearing searches or changing filters.
+  - **Empty Results**: Both pages show "No matching items" with a button that clears search and filters, then focuses the search bar. The message waits for pending searches to finish; failed searches show "Search unavailable" instead.
+  - **Narrow Windows**: Library and Favorites keep search accessible on a second header row when the window is narrow.
+  - **Empty-State Icons**: Matched icon sizing and spacing across Library, Favorites, Recent, Tags, and no-match messages. Removed decorative backgrounds and borders from the icons in Favorites, Recent, and Tags.
+  - **Search Responses**: Late responses from a previous query, folder, or collection no longer overwrite the current search results.
+  - **Library Navigation**: Removed a brief delay when restoring the saved scroll position after navigating back.
+  - **Files Created**: `src/lib/utils/retainedCover.ts`, `src/lib/components/Library/FilterEmptyState.svelte`.
+  - **Files Modified**: `src/lib/views/Library.svelte`, `src/lib/views/Favorites.svelte`, `src/lib/views/Recent.svelte`, `src/lib/views/Tags.svelte`, `src/lib/components/Library/LibraryGridItem.svelte`.
+
 ### Security
 - Vulnerability fixes
 

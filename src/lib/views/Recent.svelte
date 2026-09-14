@@ -442,9 +442,9 @@
       ></div>
     </div>
   {:else if items.length === 0}
-    <div class="flex flex-col items-center justify-center h-full text-center">
+    <div class="flex flex-col items-center justify-center h-full text-center p-8">
       <div
-        class="w-32 h-32 mb-6 rounded-2xl bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center"
+        class="w-16 h-16 mb-4 shrink-0 flex items-center justify-center"
       >
         <svg
           class="w-16 h-16 text-slate-600"

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, tick, untrack } from "svelte";
+  import { retainedCover, prefetchCovers } from "../utils/retainedCover";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { openBook, appState } from "../stores/app";
   import { fade, fly } from "svelte/transition";
   import Dialog from "../components/Dialog.svelte";
@@ -14,6 +15,7 @@
   } from "../state/selection.svelte";
   import { dragScroll } from "../utils/dragScroll";
   import FolderSwitcher from "../components/FolderSwitcher.svelte";
+  import FilterEmptyState from "../components/Library/FilterEmptyState.svelte";
   import type { LibraryItem } from "../stores/app";
   import { toasts } from "../stores/toast";
   import {
@@ -69,25 +71,38 @@
     q: searchQuery,
     r: selectedRoot,
   });
+  let searchFailed = $state(false);
+  let completedSearchParams = $state.raw<typeof searchParamsForEffect | null>(null);
+  let searchPending = $derived(
+    !!searchQuery.trim() && completedSearchParams !== searchParamsForEffect,
+  );
 
   $effect(() => {
-    const { q, r } = searchParamsForEffect;
+    const params = searchParamsForEffect;
+    const { q, r } = params;
+    clearTimeout(searchTimeout);
+    searchFailed = false;
 
     if (q.trim()) {
-      clearTimeout(searchTimeout);
-
       // Slower for typing, faster for scope switch
       const isNavOnly = untrack(() => lastProcessedQuery) === q;
       const delay = isNavOnly ? 50 : 300;
       lastProcessedQuery = q;
 
       searchTimeout = setTimeout(async () => {
-        const results = await window.electronAPI.library.search(q, {
-          favoritesOnly: true,
-          root: r,
-        });
-        if (q === searchQuery) {
-          searchResults = results;
+        try {
+          const results = await window.electronAPI.library.search(q, {
+            favoritesOnly: true,
+            root: r,
+          });
+          if (params === searchParamsForEffect) searchResults = results;
+        } catch {
+          if (params === searchParamsForEffect) {
+            searchResults = [];
+            searchFailed = true;
+          }
+        } finally {
+          if (params === searchParamsForEffect) completedSearchParams = params;
         }
       }, delay);
     } else {
@@ -553,6 +568,17 @@
 
   $effect(() => {
     if (!loaderRef) return;
+    return prefetchCovers(loaderRef, filteredItems.slice(renderLimit, renderLimit + 50).map(getCoverSrc));
+  });
+
+  function getCoverSrc(item: LibraryItem): string | null {
+    return item.cover_path
+      ? `media:///${item.cover_path.replace(/\\/g, "/")}${item._coverVersion ? `?v=${item._coverVersion}` : ""}`
+      : null;
+  }
+
+  $effect(() => {
+    if (!loaderRef) return;
     // Track dependencies to re-run effect and re-trigger observer when more items are needed
     renderLimit;
     filteredItems.length;
@@ -564,7 +590,8 @@
           renderLimit += 50;
         }
       },
-      { rootMargin: "500px" },
+      // Mount the next batch at the visible boundary so its entry animation is seen.
+      { root: loaderRef.parentElement, rootMargin: "0px" },
     );
     observer.observe(loaderRef);
     return () => observer.disconnect();
@@ -740,8 +767,15 @@
   let availableTypes = $state<ContentType[]>([]);
   let selectedTypeIds = $state<number[]>([]);
   let excludedTypeIds = $state<number[]>([]);
-  let lastClickTime = $state(0);
-  let lastClickedId = $state<number | null>(null);
+  let pendingTypeFilter = $state<{ selected: number[]; excluded: number[] } | null>(null);
+  let typeFilterTimeout: ReturnType<typeof setTimeout>;
+  let filterSelection = $derived(pendingTypeFilter ?? {
+    selected: selectedTypeIds,
+    excluded: excludedTypeIds,
+  });
+  onDestroy(() => clearTimeout(typeFilterTimeout));
+  let lastClickTime = 0;
+  let lastClickedId: number | null = null;
   let showTypeFilter = $state(false);
 
   const ICONS: Record<string, string> = {
@@ -765,41 +799,65 @@
     return ICONS[name.toLowerCase()] || "📄";
   }
 
-  function toggleTypeFilter(typeId: number) {
-    if (selectedTypeIds.includes(typeId)) {
-      selectedTypeIds = selectedTypeIds.filter((id) => id !== typeId);
-    } else {
-      selectedTypeIds = [...selectedTypeIds, typeId];
+  function commitTypeFilters() {
+    clearTimeout(typeFilterTimeout);
+    if (!pendingTypeFilter) return;
+    const { selected, excluded } = pendingTypeFilter;
+    // Preserve the applied arrays when a repeated gesture has the same result.
+    if (selected.length !== selectedTypeIds.length ||
+        selected.some((id, index) => id !== selectedTypeIds[index])) {
+      selectedTypeIds = selected;
     }
+    if (excluded.length !== excludedTypeIds.length ||
+        excluded.some((id, index) => id !== excludedTypeIds[index])) {
+      excludedTypeIds = excluded;
+    }
+    pendingTypeFilter = null;
   }
 
   // Toggle type inclusion (click) or exclusion (double-click)
-  function handleTypeClick(typeId: number) {
+  function handleTypeClick(typeId: number, clickCount = 1) {
+    if (pendingTypeFilter && lastClickedId !== typeId) commitTypeFilters();
+    clearTimeout(typeFilterTimeout);
     const now = Date.now();
     const isDoubleClick = lastClickedId === typeId && now - lastClickTime < 300;
+    let { selected, excluded } = filterSelection;
 
     if (isDoubleClick) {
-      if (excludedTypeIds.includes(typeId)) {
-        excludedTypeIds = excludedTypeIds.filter((id) => id !== typeId);
+      if (excluded.includes(typeId)) {
+        excluded = excluded.filter((id) => id !== typeId);
       } else {
-        selectedTypeIds = selectedTypeIds.filter((id) => id !== typeId);
-        excludedTypeIds = [...excludedTypeIds, typeId];
+        selected = selected.filter((id) => id !== typeId);
+        excluded = [...excluded, typeId];
       }
+    } else if (excluded.includes(typeId)) {
+      excluded = excluded.filter((id) => id !== typeId);
     } else {
-      if (excludedTypeIds.includes(typeId)) {
-        excludedTypeIds = excludedTypeIds.filter((id) => id !== typeId);
-      } else {
-        toggleTypeFilter(typeId);
-      }
+      selected = selected.includes(typeId)
+        ? selected.filter((id) => id !== typeId)
+        : [...selected, typeId];
     }
-
+    // Preview the button immediately; briefly defer single-click results.
+    pendingTypeFilter = { selected, excluded };
     lastClickTime = now;
     lastClickedId = typeId;
+    if (isDoubleClick || clickCount === 0) {
+      commitTypeFilters();
+      lastClickTime = 0;
+      lastClickedId = null;
+    } else {
+      // Apply sooner, retaining the full 300 ms window for a second click.
+      typeFilterTimeout = setTimeout(commitTypeFilters, 150);
+    }
   }
 
   function clearTypeFilters() {
-    selectedTypeIds = [];
-    excludedTypeIds = [];
+    clearTimeout(typeFilterTimeout);
+    pendingTypeFilter = null;
+    lastClickTime = 0;
+    lastClickedId = null;
+    if (selectedTypeIds.length > 0) selectedTypeIds = [];
+    if (excludedTypeIds.length > 0) excludedTypeIds = [];
   }
 
   function toggleMenu(id: number, event: MouseEvent) {
@@ -1242,7 +1300,7 @@
 {/if}
 
 <header
-  class="h-16 bg-slate-900/80 border-b border-slate-700/50 flex items-center justify-between px-6 backdrop-blur-md gap-4 relative z-30"
+  class="py-3 md:py-0 md:h-16 shrink-0 bg-slate-900/80 border-b border-slate-700/50 flex flex-wrap md:flex-nowrap items-center justify-between px-6 backdrop-blur-md gap-4 relative z-30"
 >
   <div class="flex items-center flex-shrink-0">
     <svg
@@ -1275,9 +1333,9 @@
     </span>
   </div>
 
-  <div class="flex items-center gap-3">
+  <div class="contents md:flex md:items-center md:gap-3">
     <!-- Search Bar -->
-    <div class="w-64 md:w-80 lg:w-96 hidden md:block">
+    <div class="order-last w-full md:order-none md:w-80 lg:w-96">
       <div class="relative group">
         <svg
           class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-blue-400 transition-colors"
@@ -1367,8 +1425,8 @@
     <!-- Filter Button -->
     <div class="relative">
       <button
-        class="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-800/50 border border-slate-700/50 text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200 {selectedTypeIds.length >
-          0 || excludedTypeIds.length > 0
+        class="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-800/50 border border-slate-700/50 text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200 {filterSelection.selected.length >
+          0 || filterSelection.excluded.length > 0
           ? 'border-blue-500/50 text-blue-400 bg-blue-500/5'
           : ''}"
         onclick={(e) => {
@@ -1391,11 +1449,11 @@
               d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
             />
           </svg>
-          {#if selectedTypeIds.length > 0 || excludedTypeIds.length > 0}
+          {#if filterSelection.selected.length > 0 || filterSelection.excluded.length > 0}
             <span
               class="absolute -top-2 -right-2 min-w-[18px] h-[18px] flex items-center justify-center bg-blue-500 text-white text-[10px] font-bold rounded-full px-1 shadow-lg shadow-blue-500/20"
             >
-              {selectedTypeIds.length + excludedTypeIds.length}
+              {filterSelection.selected.length + filterSelection.excluded.length}
             </span>
           {/if}
         </div>
@@ -1425,15 +1483,15 @@
 
           <div class="grid grid-cols-2 gap-2.5">
             {#each availableTypes as type}
-              {@const isSelected = selectedTypeIds.includes(type.id)}
-              {@const isExcluded = excludedTypeIds.includes(type.id)}
+              {@const isSelected = filterSelection.selected.includes(type.id)}
+              {@const isExcluded = filterSelection.excluded.includes(type.id)}
               <button
-                class="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 {isSelected
+                class="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold {isSelected
                   ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                   : isExcluded
                     ? 'bg-red-600 text-white shadow-lg shadow-red-600/20'
                     : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'}"
-                onclick={() => handleTypeClick(type.id)}
+                onclick={(event) => handleTypeClick(type.id, event.detail)}
               >
                 <span class="text-base leading-none">
                   {getIcon(type.name)}
@@ -1545,10 +1603,16 @@
         class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"
       ></div>
     </div>
-  {:else if filteredItems.length === 0}
-    <div class="flex flex-col items-center justify-center h-full text-center">
+  {:else if !searchPending && filteredItems.length === 0 && (searchQuery.trim() || selectedTypeIds.length > 0 || excludedTypeIds.length > 0)}
+    <FilterEmptyState {searchFailed} onClear={() => {
+      clearTypeFilters();
+      searchQuery = "";
+      searchInputRef?.focus({ preventScroll: true });
+    }} />
+  {:else if !searchPending && filteredItems.length === 0}
+    <div class="flex flex-col items-center justify-center h-full text-center p-8">
       <div
-        class="w-32 h-32 mb-6 rounded-2xl bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center"
+        class="w-16 h-16 mb-4 shrink-0 flex items-center justify-center"
       >
         <svg
           class="w-16 h-16 text-slate-600"
@@ -1582,6 +1646,7 @@
           in:fly|local={{
             y: skipItemAnimation ? 0 : 10,
             duration: skipItemAnimation ? 0 : 300,
+            opacity: skipItemAnimation ? 1 : 0.65,
           }}
           style="z-index: {activeMenuId === item.id ? 50 : 'auto'}"
           onclick={(e: MouseEvent) => handleItemClick(item, e)}
@@ -1872,18 +1937,21 @@
             class="aspect-[2/3] bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center relative overflow-hidden rounded-t-xl"
           >
             {#if item.cover_path}
-              <img
-                src={`media:///${item.cover_path.replace(/\\/g, "/")}${item._coverVersion ? `?v=${item._coverVersion}` : ""}`}
-                alt={item.title}
-                draggable="false"
-                loading="eager"
-                style="--r18-blur: {blurR18Intensity}px"
-                class="w-full h-full object-cover transition-all duration-300 group-hover:scale-105 {item.types_list
+              <span
+                class="contents"
+                use:retainedCover={{
+                  src: getCoverSrc(item)!,
+                  alt: item.title,
+                  loading: "eager",
+                  fetchPriority: "auto",
+                  style: `--r18-blur: ${blurR18Intensity}px`,
+                  className: `w-full h-full object-cover transition-all duration-300 group-hover:scale-105 ${item.types_list
                   ?.toLowerCase()
                   .includes('r18') && blurR18
                   ? `blur-[var(--r18-blur)] ${blurR18Hover ? 'group-hover:blur-0' : ''}`
-                  : ''}"
-              />
+                  : ''}`,
+                }}
+              ></span>
             {:else}
               <svg
                 class="w-12 h-12 text-slate-500"

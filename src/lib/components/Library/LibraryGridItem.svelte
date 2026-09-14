@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { retainedCover } from "../../utils/retainedCover";
   import { fade, fly } from "svelte/transition";
   import type { LibraryItem } from "../../stores/app";
   import {
@@ -132,9 +133,8 @@
   in:fly|local={{
     y: skipItemAnimation ? 0 : 10,
     duration: skipItemAnimation ? 0 : 300,
-    opacity: 1,
+    opacity: skipItemAnimation ? 1 : 0.65,
   }}
-  style={isActiveView && !mangaMenuActive ? "content-visibility: auto;" : ""}
   onclick={(e: MouseEvent) => onItemClick(item, e)}
   onmousedown={(e: MouseEvent) =>
     handleSelectionMouseDown(e, selection.selectionMode)}
@@ -548,19 +548,21 @@
     {/if}
 
     {#if item.cover_path}
-      <img
-        src={getCoverSrc(item) || ""}
-        alt={item.title}
-        draggable="false"
-        loading={isActiveView ? "eager" : "lazy"}
-        fetchpriority={isActiveView && idx < 16 ? "high" : "auto"}
-        style="--r18-blur: {blurR18Intensity}px"
-        class="w-full h-full object-cover transition-all duration-300 group-hover:scale-105 {item.types_list
+      <span
+        class="contents"
+        use:retainedCover={{
+          src: getCoverSrc(item) || "",
+          alt: item.title,
+          loading: isActiveView ? "eager" : "lazy",
+          fetchPriority: isActiveView && idx < 16 ? "high" : "auto",
+          style: `--r18-blur: ${blurR18Intensity}px`,
+          className: `w-full h-full object-cover transition-all duration-300 group-hover:scale-105 ${item.types_list
           ?.toLowerCase()
           .includes('r18') && blurR18
           ? `blur-[var(--r18-blur)] ${blurR18Hover ? 'group-hover:blur-0' : ''}`
-          : ''}"
-      />
+          : ''}`,
+        }}
+      ></span>
     {:else}
       <div class="flex flex-col items-center gap-2 text-slate-500">
         {#if item.type === "folder"}

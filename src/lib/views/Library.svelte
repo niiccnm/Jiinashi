@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, tick, untrack } from "svelte";
+  import { prefetchCovers } from "../utils/retainedCover";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { fade } from "svelte/transition";
   import {
     openBook,
@@ -14,6 +15,7 @@
   import FolderSwitcher from "../components/FolderSwitcher.svelte";
   import MoveToFolderDialog from "../components/MoveToFolderDialog.svelte";
   import LibraryGridItem from "../components/Library/LibraryGridItem.svelte";
+  import FilterEmptyState from "../components/Library/FilterEmptyState.svelte";
   import LibraryMetadataDialogs from "../components/Library/LibraryMetadataDialogs.svelte";
   import LibraryScanOverlay from "../components/Library/LibraryScanOverlay.svelte";
   import MangaLibraryView from "../components/manga/MangaLibraryView.svelte";
@@ -147,11 +149,8 @@
       }
     };
 
-    tick().then(() => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(run);
-      });
-    });
+    // Restore after the grid updates, before painting the folder at the wrong position.
+    tick().then(run);
   }
 
   function persistActiveViewScroll() {
@@ -637,6 +636,11 @@
 
   $effect(() => {
     if (!loaderRef) return;
+    return prefetchCovers(loaderRef, filteredItems.slice(renderLimit, renderLimit + 50).map(getCoverSrc));
+  });
+
+  $effect(() => {
+    if (!loaderRef) return;
     // Track dependencies to re-run effect and re-trigger observer when more items are needed
     renderLimit;
     filteredItems.length;
@@ -658,7 +662,8 @@
           }
         }
       },
-      { rootMargin: "500px" },
+      // Mount the next batch at the visible boundary so its entry animation is seen.
+      { root: loaderRef.parentElement, rootMargin: "0px" },
     );
     observer.observe(loaderRef);
     return () => observer.disconnect();
@@ -1274,8 +1279,15 @@
   let availableTypes = $state<ContentType[]>([]);
   let selectedTypeIds = $state<number[]>([]);
   let excludedTypeIds = $state<number[]>([]);
-  let lastClickTime = $state(0);
-  let lastClickedId = $state<number | null>(null);
+  let pendingTypeFilter = $state<{ selected: number[]; excluded: number[] } | null>(null);
+  let typeFilterTimeout: ReturnType<typeof setTimeout>;
+  let filterSelection = $derived(pendingTypeFilter ?? {
+    selected: selectedTypeIds,
+    excluded: excludedTypeIds,
+  });
+  onDestroy(() => clearTimeout(typeFilterTimeout));
+  let lastClickTime = 0;
+  let lastClickedId: number | null = null;
   let showTypeFilter = $state(false);
 
   async function loadAvailableTypes() {
@@ -1286,41 +1298,65 @@
     }
   }
 
-  function toggleTypeFilter(typeId: number) {
-    if (selectedTypeIds.includes(typeId)) {
-      selectedTypeIds = selectedTypeIds.filter((id) => id !== typeId);
-    } else {
-      selectedTypeIds = [...selectedTypeIds, typeId];
+  function commitTypeFilters() {
+    clearTimeout(typeFilterTimeout);
+    if (!pendingTypeFilter) return;
+    const { selected, excluded } = pendingTypeFilter;
+    // Preserve the applied arrays when a repeated gesture has the same result.
+    if (selected.length !== selectedTypeIds.length ||
+        selected.some((id, index) => id !== selectedTypeIds[index])) {
+      selectedTypeIds = selected;
     }
+    if (excluded.length !== excludedTypeIds.length ||
+        excluded.some((id, index) => id !== excludedTypeIds[index])) {
+      excludedTypeIds = excluded;
+    }
+    pendingTypeFilter = null;
   }
 
   // Toggle type inclusion (click) or exclusion (double-click)
-  function handleTypeClick(typeId: number) {
+  function handleTypeClick(typeId: number, clickCount = 1) {
+    if (pendingTypeFilter && lastClickedId !== typeId) commitTypeFilters();
+    clearTimeout(typeFilterTimeout);
     const now = Date.now();
     const isDoubleClick = lastClickedId === typeId && now - lastClickTime < 300;
+    let { selected, excluded } = filterSelection;
 
     if (isDoubleClick) {
-      if (excludedTypeIds.includes(typeId)) {
-        excludedTypeIds = excludedTypeIds.filter((id) => id !== typeId);
+      if (excluded.includes(typeId)) {
+        excluded = excluded.filter((id) => id !== typeId);
       } else {
-        selectedTypeIds = selectedTypeIds.filter((id) => id !== typeId);
-        excludedTypeIds = [...excludedTypeIds, typeId];
+        selected = selected.filter((id) => id !== typeId);
+        excluded = [...excluded, typeId];
       }
+    } else if (excluded.includes(typeId)) {
+      excluded = excluded.filter((id) => id !== typeId);
     } else {
-      if (excludedTypeIds.includes(typeId)) {
-        excludedTypeIds = excludedTypeIds.filter((id) => id !== typeId);
-      } else {
-        toggleTypeFilter(typeId);
-      }
+      selected = selected.includes(typeId)
+        ? selected.filter((id) => id !== typeId)
+        : [...selected, typeId];
     }
-
+    // Preview the button immediately; briefly defer single-click results.
+    pendingTypeFilter = { selected, excluded };
     lastClickTime = now;
     lastClickedId = typeId;
+    if (isDoubleClick || clickCount === 0) {
+      commitTypeFilters();
+      lastClickTime = 0;
+      lastClickedId = null;
+    } else {
+      // Apply sooner, retaining the full 300 ms window for a second click.
+      typeFilterTimeout = setTimeout(commitTypeFilters, 150);
+    }
   }
 
   function clearTypeFilters() {
-    selectedTypeIds = [];
-    excludedTypeIds = [];
+    clearTimeout(typeFilterTimeout);
+    pendingTypeFilter = null;
+    lastClickTime = 0;
+    lastClickedId = null;
+    if (selectedTypeIds.length > 0) selectedTypeIds = [];
+    if (excludedTypeIds.length > 0) excludedTypeIds = [];
   }
 
   const ICONS: Record<string, string> = {
@@ -1951,25 +1987,38 @@
     f: currentFolderId,
     r: selectedRoot,
   });
+  let searchFailed = $state(false);
+  let completedSearchParams = $state.raw<typeof searchParamsForEffect | null>(null);
+  let searchPending = $derived(
+    !!searchQuery.trim() && completedSearchParams !== searchParamsForEffect,
+  );
 
   $effect(() => {
-    const { q, f, r } = searchParamsForEffect;
+    const params = searchParamsForEffect;
+    const { q, f, r } = params;
+    clearTimeout(searchTimeout);
+    searchFailed = false;
 
     if (q.trim()) {
-      clearTimeout(searchTimeout);
-
       // Use shorter delay if ONLY navigation changed
       const isNavOnly = untrack(() => lastProcessedQuery) === q;
       const delay = isNavOnly ? 50 : 300;
       lastProcessedQuery = q;
 
       searchTimeout = setTimeout(async () => {
-        const results = await window.electronAPI.library.search(q, {
-          folderId: f,
-          root: f ? undefined : r,
-        });
-        if (q === searchQuery) {
-          searchResults = results;
+        try {
+          const results = await window.electronAPI.library.search(q, {
+            folderId: f,
+            root: f ? undefined : r,
+          });
+          if (params === searchParamsForEffect) searchResults = results;
+        } catch {
+          if (params === searchParamsForEffect) {
+            searchResults = [];
+            searchFailed = true;
+          }
+        } finally {
+          if (params === searchParamsForEffect) completedSearchParams = params;
         }
       }, delay);
     } else {
@@ -2074,15 +2123,19 @@
   }
 
   let filteredItems = $derived.by(() => {
-    if (!searchQuery) return items;
-
     // Parse terms for robust matching & optimistic filtering
     const terms = searchQuery
       .toLowerCase()
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
-    if (terms.length === 0) return items;
+    if (
+      terms.length === 0 &&
+      selectedTypeIds.length === 0 &&
+      excludedTypeIds.length === 0
+    ) return items;
+
+    const currentItems = terms.length > 0 ? searchResults : items;
 
     const matchItem = (item: LibraryItem) => {
       // 1. Filter by Selected/Excluded Types
@@ -2110,7 +2163,7 @@
       }
 
       // 2. Filter by Search Query
-      if (!searchQuery) return true;
+      if (terms.length === 0) return true;
 
       const title = item.title?.toLowerCase() || "";
       const tagsList = item.tags_list
@@ -2143,7 +2196,7 @@
 
     // Filter backend results to hide stale matches (if any from debouncing)
     // and apply type filters which are currently applied client-side.
-    return searchResults.filter(matchItem);
+    return currentItems.filter(matchItem);
   });
 
   let visibleItems = $derived(filteredItems.slice(0, renderLimit));
@@ -2397,7 +2450,7 @@
   <div class="flex-1 bg-slate-900"></div>
 {:else}
   <header
-    class="h-16 bg-slate-900/80 border-b border-slate-700/50 flex items-center justify-between px-6 gap-4 sticky top-0 z-30 backdrop-blur-md"
+    class="py-3 md:py-0 md:h-16 shrink-0 bg-slate-900/80 border-b border-slate-700/50 flex flex-wrap md:flex-nowrap items-center justify-between px-6 gap-4 sticky top-0 z-30 backdrop-blur-md"
   >
     <!-- Left: Navigation (Breadcrumbs) -->
     <div class="flex items-center gap-3 flex-1 min-w-0">
@@ -2479,7 +2532,7 @@
       </span>
     </div>
 
-    <div class="flex-1 max-w-lg hidden md:block">
+    <div class="order-last w-full md:order-none md:w-auto md:flex-1 md:max-w-lg">
       <div class="relative group">
         <svg
           class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-blue-400 transition-colors"
@@ -2562,29 +2615,12 @@
     </div>
 
     <div class="flex items-center gap-3">
-      <button
-        class="md:hidden p-2 text-slate-400 hover:text-white"
-        aria-label="Toggle search"
-      >
-        <svg
-          class="w-6 h-6"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-          />
-        </svg>
-      </button>
+
 
       <div class="relative">
         <button
-          class="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-800/50 border border-slate-700/50 text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200 {selectedTypeIds.length >
-            0 || excludedTypeIds.length > 0
+          class="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-800/50 border border-slate-700/50 text-slate-400 hover:text-white hover:bg-slate-800 transition-all duration-200 {filterSelection.selected.length >
+            0 || filterSelection.excluded.length > 0
             ? 'border-blue-500/50 text-blue-400 bg-blue-500/5'
             : ''}"
           onclick={(e) => {
@@ -2607,11 +2643,11 @@
                 d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
               />
             </svg>
-            {#if selectedTypeIds.length > 0 || excludedTypeIds.length > 0}
+            {#if filterSelection.selected.length > 0 || filterSelection.excluded.length > 0}
               <span
                 class="absolute -top-2 -right-2 min-w-[18px] h-[18px] flex items-center justify-center bg-blue-500 text-white text-[10px] font-bold rounded-full px-1 shadow-lg shadow-blue-500/20"
               >
-                {selectedTypeIds.length + excludedTypeIds.length}
+                {filterSelection.selected.length + filterSelection.excluded.length}
               </span>
             {/if}
           </div>
@@ -2641,15 +2677,15 @@
 
             <div class="grid grid-cols-2 gap-2.5">
               {#each availableTypes as type}
-                {@const isSelected = selectedTypeIds.includes(type.id)}
-                {@const isExcluded = excludedTypeIds.includes(type.id)}
+                {@const isSelected = filterSelection.selected.includes(type.id)}
+                {@const isExcluded = filterSelection.excluded.includes(type.id)}
                 <button
-                  class="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 {isSelected
+                  class="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold {isSelected
                     ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                     : isExcluded
                       ? 'bg-red-600 text-white shadow-lg shadow-red-600/20'
                       : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'}"
-                  onclick={() => handleTypeClick(type.id)}
+                  onclick={(event) => handleTypeClick(type.id, event.detail)}
                 >
                   <span class="text-base leading-none">
                     {getIcon(type.name)}
@@ -2829,13 +2865,19 @@
         data-active-view={isActiveView}
         aria-hidden={isActiveView ? "false" : "true"}
       >
-        {#if view.items.length === 0 && !loading}
+        {#if isActiveView && !loading && !searchPending && filteredItems.length === 0 && (searchQuery.trim() || selectedTypeIds.length > 0 || excludedTypeIds.length > 0)}
+          <FilterEmptyState {searchFailed} onClear={() => {
+            clearTypeFilters();
+            searchQuery = "";
+            searchInputRef?.focus({ preventScroll: true });
+          }} />
+        {:else if view.items.length === 0 && !loading && !searchPending}
           <div
             class="flex flex-col items-center justify-center h-full text-center p-8"
           >
-            <div class="mb-4 text-slate-700">
+            <div class="mb-4 shrink-0 text-slate-600">
               <svg
-                class="w-24 h-24"
+                class="w-16 h-16"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -2843,7 +2885,7 @@
                 <path
                   stroke-linecap="round"
                   stroke-linejoin="round"
-                  stroke-width="1"
+                  stroke-width="1.5"
                   d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
                 />
               </svg>
@@ -2875,7 +2917,7 @@
                 {item}
                 {idx}
                 {isActiveView}
-                {skipItemAnimation}
+                skipItemAnimation={skipItemAnimation}
                 {selection}
                 filteredItems={filteredItems}
                 activeMenuId={activeMenuId}
@@ -2912,7 +2954,7 @@
           </div>
 
           <!-- Loading Trigger -->
-          {#if renderLimit < filteredItems.length}
+          {#if isActiveView && renderLimit < filteredItems.length}
             <div
               bind:this={loaderRef}
               class="h-20 flex items-center justify-center mt-8"
