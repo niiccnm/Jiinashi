@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Reader Interaction**: The panel handles its own wheel and drag scrolling while image zooming, panning, and middle-click reset remain available outside it.
   - **Files Modified**: `src/lib/components/Reader/ReaderSettings.svelte`, `src/lib/views/Reader.svelte`.
 
+- **Settings Organization and Search**: Redesigned the Settings page with category navigation and search while preserving the existing settings and their behavior.
+  - **Category Navigation**: Grouped related options into General, Library, Reader, Downloads, Manga & tracking, Extensions, and Data, with a sidebar on wide windows and a compact horizontal menu on narrow windows.
+  - **Visual Design**: Matched the Settings page to the Library's blue-slate color family, with a slightly darker canvas and restrained panel and hover shades suited to the denser layout.
+  - **Settings Search**: Added ranked fuzzy search across setting names, sections, categories, descriptions, and related terms. Search tolerates common typing mistakes, missing or transposed letters, and words entered out of order.
+  - **Result Navigation**: Search results show their category, section, title, and description, and support keyboard selection before moving to and briefly highlighting the chosen setting.
+  - **Keyboard Controls**: Replaced custom toggles with native checkbox controls that support `Tab` navigation and `Space` activation, with visible keyboard focus indicators.
+  - **Code Structure**: Replaced the monolithic Settings view with smaller UI modules, a shared state model, and a searchable catalog. The fuzzy matching utility can be reused by other searches in the app.
+  - **Files Created**: `src/lib/utils/fuzzySearch.ts`, `src/lib/views/settingsCatalog.ts`, `src/lib/views/settings/`.
+  - **Files Modified**: `src/lib/views/Settings.svelte`.
+
 ### Deprecated
 - Soon-to-be removed features
 
