@@ -7,9 +7,14 @@ const ts = require('typescript');
 // Runs view scripts in a VM with mocked imports, IPC, and Svelte lifecycle hooks.
 function compileScript(file, wrapInstance = script => script) {
   const fileSource = fs.readFileSync(file, 'utf8');
-  const source = file.endsWith('.svelte') ? [...fileSource
+  let source = file.endsWith('.svelte') ? [...fileSource
     .matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
     .map(([, attributes, script]) => /\bmodule\b/.test(attributes) ? script : wrapInstance(script)).join('\n') : fileSource;
+  if (source.includes('expandRomajiLongVowels')) {
+    const utilities = ts.createSourceFile('manga.ts', fs.readFileSync('src/lib/utils/manga.ts', 'utf8'), ts.ScriptTarget.ES2022, true);
+    const helper = utilities.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'expandRomajiLongVowels');
+    source = helper.getText(utilities) + '\n' + source;
+  }
   return ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   transformers: { before: [context => root => {
@@ -22,7 +27,8 @@ function compileScript(file, wrapInstance = script => script) {
     };
     return ts.visitNode(root, visit);
   }] },
-  }).outputText.replace(/export \{\};?\s*$/, '').replace(/^export /gm, '');
+  }).outputText.replace(/export \{\};?\s*$/, '').replace(/^export /gm, '')
+    .replace(/^/, 'const onMangaMetadataInvalidated = globalThis.onMangaMetadataInvalidated || (() => () => {});\n');
 }
 const compiled = compileScript('src/App.svelte');
 
@@ -485,7 +491,8 @@ test('the initial Manga browser has no added loading message or premature result
   const compiledExports = {};
   vm.runInNewContext(code, {
     exports: compiledExports, clearTimeout,
-    require: name => name.startsWith('svelte') ? require(name) : {},
+    require: name => name.startsWith('svelte') ? require(name) :
+      name.endsWith('mangaSeriesSessionCache') ? { onMangaMetadataInvalidated: () => () => {} } : {},
   });
   const { body } = render(compiledExports.default, { props: { onSelectManga() {} } });
   assert.doesNotMatch(body, /Loading manga|animate-spin|No results found|Load More/);
@@ -741,7 +748,8 @@ for (const slow of [false, true]) {
       toasts: { add: (...args) => notices.push(args) },
       window: { electronAPI: {
         settings: { get: async () => { settingsReads++; return 'romaji'; } },
-        manga: { anilistTrending: () => request },
+        manga: { anilistTrending: () => request,
+          mangabakaBrowse: async () => { throw new Error('MangaBaka offline'); } },
       } },
     };
     vm.runInNewContext(`${compileScript('src/lib/components/manga/MetadataBrowser.svelte')}
@@ -765,7 +773,7 @@ for (const slow of [false, true]) {
     loadingEffect();
     assert.equal(sandbox.initialLoading(), false);
     assert.equal(sandbox.loading(), false);
-    assert.equal(settingsReads, 1);
+    assert.equal(settingsReads, 2, 'title style and metadata provider are read together');
     assert.deepEqual(notices, [['Downloader: Failed to fetch metadata results.', 'error']]);
 
     // Unmount during a request to check spinner timer cleanup.

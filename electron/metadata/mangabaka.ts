@@ -1,11 +1,13 @@
 import axios from "axios";
 
-const MANGABAKA_API_BASE_URL = "https://api.mangabaka.dev";
+const MANGABAKA_API_BASE_URL = "https://api.mangabaka.org";
 const SEARCH_RATE_LIMIT_WINDOW_MS = 60_000;
 const SEARCH_RATE_LIMIT_BUDGET = 30;
 const SEARCH_CACHE_TTL_MS = 2 * 60 * 1000;
 const DETAIL_CACHE_TTL_MS = 15 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 12_000;
+// MangaBaka's Hentai genre: /v1/tags?id=10.
+const HENTAI_TAG_ID = 10;
 
 type MangabakaCacheEntry = {
   expiresAtMs: number;
@@ -19,6 +21,43 @@ function toPositiveInt(value: unknown): number {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function normalizeSeriesTitles(series: any) {
+  if (!series || !Array.isArray(series.titles)) return series;
+  const primary = series.titles.find((entry: any) =>
+    entry?.language === "ja-Latn" && entry?.is_primary === true &&
+    typeof entry?.title === "string" && entry.title.trim(),
+  );
+  if (!primary) return series;
+  const romaji = primary.title.trim();
+  const previous = String(series.romanized_title || "").trim();
+  if (romaji === previous) return series;
+  const aliases = Array.isArray(series.secondary_titles?.unknown)
+    ? [...series.secondary_titles.unknown] : [];
+  if (previous && !aliases.some((entry: any) => entry?.title === previous)) {
+    aliases.push({ title: previous, type: "unknown" });
+  }
+  return {
+    ...series,
+    romanized_title: romaji,
+    secondary_titles: { ...series.secondary_titles, unknown: aliases },
+  };
+}
+
+// Normalize titles before caching, including nested recommendation results.
+function normalizeResponseTitles(payload: any) {
+  if (!payload?.data) return payload;
+  const data = payload.data;
+  return {
+    ...payload,
+    data: Array.isArray(data) ? data.map((entry: any) => entry?.series
+      ? { ...entry, series: normalizeSeriesTitles(entry.series) }
+      : normalizeSeriesTitles(entry))
+      : Array.isArray(data.series)
+        ? { ...data, series: data.series.map(normalizeSeriesTitles) }
+        : normalizeSeriesTitles(data),
+  };
 }
 
 export class MangabakaMetadataService {
@@ -122,7 +161,7 @@ export class MangabakaMetadataService {
               timeout: REQUEST_TIMEOUT_MS,
             },
           );
-          const payload = response?.data;
+          const payload = normalizeResponseTitles(response?.data);
           if (shouldCache) {
             this.writeCache(
               cacheStore!,
@@ -160,11 +199,11 @@ export class MangabakaMetadataService {
     }
   }
 
-  async search(query: string, page = 1, limit = 10) {
+  async search(query: string, page = 1, limit = 10, sort?: "trending_7d" | "popularity_asc", hideHentai = false) {
     const q = String(query || "").trim();
     const safePage = Math.max(1, Math.floor(Number(page || 1)));
     const safeLimit = Math.max(1, Math.min(50, Math.floor(Number(limit || 10))));
-    const requestKey = `search|${q}|${safePage}|${safeLimit}`;
+    const requestKey = `search|${q}|${safePage}|${safeLimit}|${sort || "relevance"}|${hideHentai}`;
     return this.request({
       requestKey,
       cacheKey: requestKey,
@@ -172,7 +211,9 @@ export class MangabakaMetadataService {
       cacheTtlMs: SEARCH_CACHE_TTL_MS,
       path: "/v1/series/search",
       params: {
-        q,
+        q: q || undefined,
+        sort_by: sort,
+        tag_not: hideHentai ? HENTAI_TAG_ID : undefined,
         page: safePage,
         limit: safeLimit,
       },
@@ -181,7 +222,26 @@ export class MangabakaMetadataService {
     });
   }
 
-  async getSeries(seriesId: number) {
+  async browse(mode: "trending" | "popular", page = 1, hideHentai = false) {
+    return this.search("", page, 20, mode === "trending" ? "trending_7d" : "popularity_asc", hideHentai);
+  }
+
+  async getRecommendations(seriesId: number, hideHentai = false) {
+    const id = toPositiveInt(seriesId);
+    if (!id) return { data: [] };
+    const requestKey = `recommendations|${id}|${hideHentai}`;
+    return this.request({
+      requestKey,
+      cacheKey: requestKey,
+      cacheStore: this.detailCache,
+      cacheTtlMs: DETAIL_CACHE_TTL_MS,
+      path: `/v1/series/${id}/similar`,
+      params: { limit: 24, tag_not: hideHentai ? HENTAI_TAG_ID : undefined },
+      retries: 1,
+    });
+  }
+
+  async getSeries(seriesId: number, options: { throwOnError?: boolean } = {}) {
     const id = toPositiveInt(seriesId);
     if (id <= 0) return null;
     const requestKey = `series|${id}`;
@@ -193,14 +253,16 @@ export class MangabakaMetadataService {
       cacheTtlMs: DETAIL_CACHE_TTL_MS,
       path: `/v1/series/${id}/full`,
       retries: 1,
-    }).catch(async () => {
+    }).catch(async (error) => {
+      if (options.throwOnError && Number(error?.response?.status) !== 404) throw error;
       try {
         return await this.request({
           requestKey: `${requestKey}|fallback`,
           path: `/v1/series/${id}`,
           retries: 1,
         });
-      } catch {
+      } catch (error: any) {
+        if (options.throwOnError && Number(error?.response?.status) !== 404) throw error;
         return null;
       }
     });
@@ -212,7 +274,7 @@ export class MangabakaMetadataService {
     return list[0];
   }
 
-  async getSeriesByAniListId(anilistId: number) {
+  async getSeriesByAniListId(anilistId: number, options: { throwOnError?: boolean } = {}) {
     const id = toPositiveInt(anilistId);
     if (id <= 0) return null;
     const payload = await this.request({
@@ -222,11 +284,14 @@ export class MangabakaMetadataService {
       cacheTtlMs: DETAIL_CACHE_TTL_MS,
       path: `/v1/source/anilist/${id}`,
       retries: 1,
-    }).catch(() => null);
+    }).catch((error) => {
+      if (options.throwOnError && Number(error?.response?.status) !== 404) throw error;
+      return null;
+    });
     return this.pickSeriesFromSourceLookup(payload);
   }
 
-  async getSeriesByMalId(malId: number) {
+  async getSeriesByMalId(malId: number, options: { throwOnError?: boolean } = {}) {
     const id = toPositiveInt(malId);
     if (id <= 0) return null;
     const payload = await this.request({
@@ -236,7 +301,10 @@ export class MangabakaMetadataService {
       cacheTtlMs: DETAIL_CACHE_TTL_MS,
       path: `/v1/source/my-anime-list/${id}`,
       retries: 1,
-    }).catch(() => null);
+    }).catch((error) => {
+      if (options.throwOnError && Number(error?.response?.status) !== 404) throw error;
+      return null;
+    });
     return this.pickSeriesFromSourceLookup(payload);
   }
 }

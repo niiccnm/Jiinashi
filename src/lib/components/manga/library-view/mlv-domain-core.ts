@@ -1,4 +1,4 @@
-import { resolveReadingFormatFromMetadata } from "../../../utils/manga";
+import { expandRomajiLongVowels, resolveReadingFormatFromMetadata } from "../../../utils/manga";
 
 export type TrackingServiceId = "mal" | "anilist";
 
@@ -90,7 +90,7 @@ type SelectedDetailContext = {
 };
 
 function normalizeText(value: string) {
-  return String(value || "")
+  return expandRomajiLongVowels(String(value || ""))
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")

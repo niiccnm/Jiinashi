@@ -3,7 +3,7 @@ export const settingsCategories = [
   { id: "library", label: "Library", description: "Manage source folders and their display order.", icon: "M4 4h4v16H4zM8 4h4v16H8zM15 4l4-1 4 16-4 1z" },
   { id: "reading", label: "Reader", description: "Default page layout, image scaling, and reading direction.", icon: "M12 6v15m0-15C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 2Z" },
   { id: "downloads", label: "Downloads", description: "Download location, request limits, and site sign-in.", icon: "M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5" },
-  { id: "manga", label: "Manga & tracking", description: "Title language, private reading, and connected tracking accounts.", icon: "M4 19.5V5.5A2.5 2.5 0 0 1 6.5 3H20v18H6.5a2.5 2.5 0 0 1 0-5H20M9 10l2 2 4-4" },
+  { id: "manga", label: "Manga & tracking", description: "Information source, title language, private reading, and tracking accounts.", icon: "M4 19.5V5.5A2.5 2.5 0 0 1 6.5 3H20v18H6.5a2.5 2.5 0 0 1 0-5H20M9 10l2 2 4-4" },
   { id: "extensions", label: "Extensions", description: "Install repositories and manage available sources.", icon: "M9 4H4v5a3 3 0 1 1 0 6v5h5a3 3 0 1 1 6 0h5v-5a3 3 0 1 0 0-6V4h-5a3 3 0 1 0-6 0Z" },
   { id: "data", label: "Data", description: "Back up, restore, transfer, or clear your library data.", icon: "M20 5c0 2-4 3-8 3S4 7 4 5s4-3 8-3 8 1 8 3ZM4 5v14c0 2 4 3 8 3s8-1 8-3V5M4 12c0 2 4 3 8 3s8-1 8-3" },
 ] as const;
@@ -50,6 +50,8 @@ export const settingsCatalog: readonly SettingSearchEntry[] = [
   { id: "history", category: "downloads", section: "Downloader", label: "Max History Items", description: "Number of completed downloads to keep in history", keywords: "limit keep completed download records" },
   { id: "authentication", category: "downloads", section: "Site Authentication", label: "E-Hentai / ExHentai", description: "Site authentication", keywords: "sign in login cookies account into restricted sites" },
   { id: "series-title", category: "manga", section: "Manga preferences", label: "Series Title Language", description: "Choose how manga titles are displayed throughout the app", keywords: "romaji english original native shown display manga title language" },
+  { id: "metadata-provider", category: "manga", section: "Manga preferences", label: "Manga Information Source", description: "Choose AniList or MangaBaka for manga discovery and library information", keywords: "metadata provider anilist mangabaka fallback search trending all time popularity" },
+  { id: "mangabaka-hide-hentai", category: "manga", section: "Manga preferences", label: "Hide NSFW", description: "Hides MangaBaka results tagged Hentai", keywords: "adult explicit filter nsfw r18 hentai fallback" },
   { id: "incognito", category: "manga", section: "Manga preferences", label: "Incognito Mode", description: "Prevent automatic tracker updates while reading; manual edits still sync", keywords: "privacy private history ctrl shift i stop automatic progress updates reading" },
   { id: "mal", category: "manga", section: "Tracking Services", label: "MyAnimeList", description: "Connect or reconnect your tracker and manage its client ID", keywords: "mal account login custom oauth link reading progress tracking" },
   { id: "anilist", category: "manga", section: "Tracking Services", label: "AniList", description: "Connect or reconnect your tracker and manage its client ID", keywords: "account login custom oauth link reading progress tracking" },

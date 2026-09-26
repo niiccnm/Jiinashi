@@ -16,6 +16,7 @@ import {
   toPositiveInt,
 } from "./msv-domain-core";
 import { msvApi } from "./msv-runtime";
+import { mangaMetadataRevision } from "../mangaSeriesSessionCache";
 
 export function createMsvMetadataSlice(ctx: any) {
   async function refreshSeriesTitleStyle() {
@@ -104,6 +105,7 @@ export function createMsvMetadataSlice(ctx: any) {
   }
 
   async function loadFriendsReading(currentDetail: any, token: number) {
+    const metadataRevisionAtStart = mangaMetadataRevision;
     if (!currentDetail) {
       ctx.friends = [];
       return;
@@ -115,7 +117,7 @@ export function createMsvMetadataSlice(ctx: any) {
         currentDetail.id,
         currentDetail.idMal,
       );
-      if (!ctx.isMounted || token !== ctx.loadToken) return;
+      if (!ctx.isMounted || token !== ctx.loadToken || metadataRevisionAtStart !== mangaMetadataRevision) return;
 
       ctx.friends = (rawFriends || []).map((friend: any) => ({
         name: friend.username,
@@ -131,6 +133,7 @@ export function createMsvMetadataSlice(ctx: any) {
       }));
       ctx.persistSeriesSessionCache();
     } catch (e) {
+      if (!ctx.isMounted || token !== ctx.loadToken || metadataRevisionAtStart !== mangaMetadataRevision) return;
       console.error("Failed to load friends reading data:", e);
       ctx.friends = [];
       ctx.persistSeriesSessionCache();

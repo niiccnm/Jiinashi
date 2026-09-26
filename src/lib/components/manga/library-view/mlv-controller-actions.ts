@@ -1,3 +1,4 @@
+import { mangaMetadataRevision } from "../mangaSeriesSessionCache";
 import {
   normalizeProviderKey,
   resolveOpenSourceProviderSite,
@@ -384,6 +385,7 @@ export async function mlvLoadSeriesDetail(
     ctx.resetSeriesDetailState(true);
     return;
   }
+  const metadataRevisionAtStart = mangaMetadataRevision;
   const trackingRevisionAtStart = ctx.getTrackingStatusRevision(seriesId);
 
   if (!force) {
@@ -438,7 +440,7 @@ export async function mlvLoadSeriesDetail(
     let seriesTrackingEntries = trackingContext.trackingEntries;
     const nextActiveTrackingServices = trackingContext.activeTrackingServices;
 
-    if (requestId !== state.detailRequestId) return;
+    if (requestId !== state.detailRequestId || metadataRevisionAtStart !== mangaMetadataRevision) return;
     const initialTrackingCards = ctx.filterTrackingCardsForDisplay(
       ctx.buildUserTrackingStatusCards(
         nextActiveTrackingServices,
@@ -465,15 +467,18 @@ export async function mlvLoadSeriesDetail(
     }
 
     let resolvedAnilistDetail: any = null;
-    if (anilistId && anilistId > 0) {
-      try {
-        resolvedAnilistDetail = await ctx.api.anilistDetails(anilistId);
-      } catch (error) {
-        console.warn("Failed to load AniList details:", error);
-      }
+    try {
+      resolvedAnilistDetail = await ctx.api.metadataDetails({
+        seriesId,
+        anilistId: anilistId || undefined,
+        malId: Number(resolvedTrackingIds.malId || 0) || undefined,
+        mangabakaId: Number(seriesItem?.mangabaka_id || 0) || undefined,
+      });
+    } catch (error) {
+      console.warn("Failed to load manga metadata:", error);
     }
 
-    if (requestId !== state.detailRequestId) return;
+    if (requestId !== state.detailRequestId || metadataRevisionAtStart !== mangaMetadataRevision) return;
     const resolvedTrackedAnilistId =
       Number(
         resolvedAnilistDetail?.id ||
@@ -488,7 +493,7 @@ export async function mlvLoadSeriesDetail(
     try {
       const freshestTrackingEntries =
         await ctx.api.getTrackingEntries(seriesId);
-      if (requestId !== state.detailRequestId) return;
+      if (requestId !== state.detailRequestId || metadataRevisionAtStart !== mangaMetadataRevision) return;
       if (
         Array.isArray(freshestTrackingEntries) &&
         freshestTrackingEntries.length > 0
@@ -518,7 +523,7 @@ export async function mlvLoadSeriesDetail(
         () => requestId !== state.detailRequestId,
       ),
     );
-    if (requestId !== state.detailRequestId) return;
+    if (requestId !== state.detailRequestId || metadataRevisionAtStart !== mangaMetadataRevision) return;
     const canApplyTrackingCards =
       ctx.getTrackingStatusRevision(seriesId) === trackingRevisionAtStart;
     if (canApplyTrackingCards) {
@@ -555,6 +560,7 @@ export async function mlvLoadSeriesDetail(
     const anilistIdForFriends = Number(resolvedTrackedAnilistId || 0);
     const malIdForFriends = Number(resolvedTrackedMalId || 0);
 
+    if (metadataRevisionAtStart !== mangaMetadataRevision) return;
     if (!anilistIdForFriends && !malIdForFriends) {
       state.friends = [];
       ctx.setDetailCache(seriesId, {
@@ -572,7 +578,7 @@ export async function mlvLoadSeriesDetail(
       anilistIdForFriends || undefined,
       malIdForFriends || undefined,
     );
-    if (requestId !== state.detailRequestId) return;
+    if (requestId !== state.detailRequestId || metadataRevisionAtStart !== mangaMetadataRevision) return;
     state.friends = ctx.mapFriendsReading(rawFriends);
     ctx.setDetailCache(seriesId, {
       detail: resolvedAnilistDetail,

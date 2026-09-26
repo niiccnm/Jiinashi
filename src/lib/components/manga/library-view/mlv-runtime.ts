@@ -76,6 +76,9 @@ export const mlvApi = {
   }) {
     return window.electronAPI.manga.removeTrackingEntry(payload);
   },
+  metadataDetails(identity: { seriesId?: number; anilistId?: number; malId?: number; mangabakaId?: number }) {
+    return window.electronAPI.manga.metadataDetails(identity);
+  },
   anilistDetails(anilistId: number) {
     return window.electronAPI.manga.anilistDetails(anilistId);
   },

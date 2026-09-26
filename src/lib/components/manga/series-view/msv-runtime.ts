@@ -12,8 +12,8 @@ export const msvApi = {
     getDownloadQueue() {
       return window.electronAPI.manga.getDownloadQueue();
     },
-    mangabakaDetails(mangabakaId: number) {
-      return window.electronAPI.manga.mangabakaDetails(mangabakaId);
+    metadataDetails(identity: { anilistId?: number; malId?: number; mangabakaId?: number }) {
+      return window.electronAPI.manga.metadataDetails(identity);
     },
     anilistDetails(anilistId: number) {
       return window.electronAPI.manga.anilistDetails(anilistId);

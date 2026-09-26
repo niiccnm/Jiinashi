@@ -1,5 +1,7 @@
+import { expandRomajiLongVowels } from "../../../utils/manga";
+
 export function normalizeMatchText(value: string) {
-  return String(value || "")
+  return expandRomajiLongVowels(String(value || ""))
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")

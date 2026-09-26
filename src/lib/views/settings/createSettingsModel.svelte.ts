@@ -1,6 +1,8 @@
 import { onMount } from "svelte";
 import type { MangaExtensionSite } from "../../../../electron/preload/types";
 import { toasts } from "../../stores/toast";
+import { mlvDetailCache } from "../../components/manga/library-view/mlv-runtime";
+import { invalidateMangaMetadataCache } from "../../components/manga/mangaSeriesSessionCache";
 
 export function createSettingsModel() {
   let loading = $state(false);
@@ -75,10 +77,23 @@ export function createSettingsModel() {
 
   async function updateSetting(key: string, value: string | boolean) {
     const stringValue = String(value);
+    const previousValue = settings[key];
+    const isMangaMetadataSetting = key === "manga_metadata_provider" || key === "mangabaka_hide_hentai";
     settings[key] = stringValue; // Optimistic update
     try {
       await window.electronAPI.settings.set(key, stringValue);
+      if (isMangaMetadataSetting) {
+        mlvDetailCache.clear();
+        invalidateMangaMetadataCache();
+        const message = key === "manga_metadata_provider"
+          ? `Manga information source changed to ${stringValue === "mangabaka" ? "MangaBaka" : "AniList"}`
+          : `MangaBaka NSFW filter ${stringValue === "false" ? "disabled" : "enabled"}`;
+        toasts.add(message, "success");
+      }
     } catch (e) {
+      if (isMangaMetadataSetting && settings[key] === stringValue) {
+        settings[key] = previousValue || (key === "manga_metadata_provider" ? "anilist" : "true");
+      }
       console.error(`Failed to update setting ${key}:`, e);
       toasts.add(`Failed to update setting: ${key}`, "error");
     }

@@ -1,45 +1,9 @@
 import path from "path";
+import { expandRomajiLongVowels } from "../../../src/lib/utils/manga";
 import type { MangaStatus, ReadingFormat } from "../../types/manga-types";
 import { MAX_SEARCH_QUERIES, type MangaLinkResolveInput } from "./contracts";
 
-export type SeriesTitleStyle = "original" | "romaji" | "english";
-
-type SeriesTitleSource = {
-  title_original?: string | null;
-  title_romaji?: string | null;
-  title_english?: string | null;
-};
-
-export function normalizeSeriesTitleStyle(
-  value: string | null | undefined,
-): SeriesTitleStyle {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "original") return "original";
-  if (normalized === "english") return "english";
-  return "romaji";
-}
-
-export function resolveSeriesTitle(
-  series: SeriesTitleSource | null | undefined,
-  style: SeriesTitleStyle = "romaji",
-  fallback = "Unknown Series",
-): string {
-  const english = String(series?.title_english || "").trim();
-  const romaji = String(series?.title_romaji || "").trim();
-  const original = String(series?.title_original || "").trim();
-
-  const orderedCandidates =
-    style === "original"
-      ? [original, romaji, english]
-      : style === "english"
-        ? [english, romaji, original]
-        : [romaji, english, original];
-
-  for (const candidate of orderedCandidates) {
-    if (candidate) return candidate;
-  }
-  return fallback;
-}
+export { normalizeSeriesTitleStyle, resolveSeriesTitle, type SeriesTitleStyle } from "../../../src/lib/utils/manga";
 
 export function uniqueStrings(values: unknown[]): string[] {
   const seen = new Set<string>();
@@ -67,7 +31,7 @@ export function firstMeaningfulTitle(
 }
 
 export function normalizeTitleForCompare(value: string): string {
-  return String(value || "")
+  return expandRomajiLongVowels(String(value || ""))
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()

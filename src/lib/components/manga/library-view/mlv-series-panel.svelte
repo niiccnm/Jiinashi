@@ -657,7 +657,7 @@
                   <span
                     class="px-4 py-1.5 bg-slate-900 border border-slate-800 rounded-full text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-white hover:border-slate-600 transition-all cursor-default"
                   >
-                    {genre}
+                    {String(genre).replace(/_+/g, " ")}
                   </span>
                 {/each}
               </div>

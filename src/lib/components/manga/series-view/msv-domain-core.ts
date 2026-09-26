@@ -31,6 +31,14 @@ export function getSelectedMetadataProviderForManga(manga: any) {
   return "anilist";
 }
 
+export function getSeriesSessionCacheKey(manga: any) {
+  const provider = getSelectedMetadataProviderForManga(manga);
+  const id = provider === "mangabaka"
+    ? toPositiveInt(manga?.mangabaka_id) || toPositiveInt(manga?.idMangabaka) || toPositiveInt(manga?.id)
+    : toPositiveInt(manga?.anilist_id) || toPositiveInt(manga?.idAnilist) || toPositiveInt(manga?.id);
+  return id > 0 ? `${provider}:${id}` : "";
+}
+
 export function escapeHtml(value: unknown) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -95,16 +103,26 @@ export function formatMangabakaDescriptionHtml(value: unknown) {
   const input = String(value || "").trim();
   if (!input) return "";
 
-  const markdownLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+  // Match source text before generating HTML so Markdown cannot alter link attributes.
+  const inlineMarkdown = /\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"']+)|(?<!\w)(\*\*|__|\*|_)(?=\S)([\s\S]*?\S)(?<![\\*_])\5(?![\w*_])/gi;
   let out = "";
   let lastIndex = 0;
   let match: RegExpExecArray | null = null;
 
-  while ((match = markdownLinkRegex.exec(input)) !== null) {
+  while ((match = inlineMarkdown.exec(input)) !== null) {
     const matchStart = match.index;
     const matchEnd = matchStart + match[0].length;
     out += linkifyPlainText(input.slice(lastIndex, matchStart));
-    out += buildExternalAnchor(match[1] || match[2], match[2]);
+    if (match[1]) {
+      out += escapeHtml(match[1]);
+    } else if (match[2]) {
+      out += buildExternalAnchor(match[2], match[3]);
+    } else if (match[4]) {
+      out += linkifyPlainText(match[4]);
+    } else {
+      const tag = match[5].length === 2 ? "strong" : "em";
+      out += `<${tag}>${formatMangabakaDescriptionHtml(match[6])}</${tag}>`;
+    }
     lastIndex = matchEnd;
   }
 

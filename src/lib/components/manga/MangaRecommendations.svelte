@@ -2,7 +2,8 @@
   import { untrack } from "svelte";
   import MangaCard from "./MangaCard.svelte";
   import {
-    mangaRecommendationRenderedMediaIdsSession,
+    mangaRecommendationRenderedKeysSession,
+    mangaMetadataRevision,
     mangaRecommendationSessionCache,
     type RecommendationSessionEntry,
     type RecommendationSessionPageResult,
@@ -15,12 +16,13 @@
 
   interface Props {
     mediaId: number;
+    mangabakaId?: number;
     seriesTitleStyle: SeriesTitleStyle;
     onSelectManga: (manga: RecommendationMedia) => void;
   }
 
   type RecommendationsResponse = Awaited<
-    ReturnType<typeof window.electronAPI.manga.anilistRecommendations>
+    ReturnType<typeof window.electronAPI.manga.recommendations>
   >;
   type RecommendationNode = RecommendationsResponse["nodes"][number];
   type RecommendationMedia = RecommendationNode["mediaRecommendation"];
@@ -29,7 +31,9 @@
     nodes: RecommendationNode[];
     visibleCount: number;
   };
-  let { mediaId, seriesTitleStyle, onSelectManga }: Props = $props();
+  let { mediaId, mangabakaId = 0, seriesTitleStyle, onSelectManga }: Props = $props();
+  const recommendationKey = $derived(mediaId > 0 || mangabakaId > 0
+    ? `anilist:${mediaId}:mangabaka:${mangabakaId}` : "");
 
   const ITEMS_PER_PAGE = 5;
 
@@ -40,8 +44,8 @@
   let visibleCount = $state(ITEMS_PER_PAGE);
   let loadError = $state<string | null>(null);
   let requestToken = 0;
-  let renderedMediaIds = $state<number[]>(
-    Array.from(mangaRecommendationRenderedMediaIdsSession),
+  let renderedKeys = $state<string[]>(
+    Array.from(mangaRecommendationRenderedKeysSession),
   );
 
   function createRecommendationSessionEntry(): RecommendationSessionEntry {
@@ -56,14 +60,14 @@
   }
 
   function getRecommendationSessionEntry(
-    mediaIdValue: number,
+    keyValue: string,
     createIfMissing = true,
   ) {
-    if (!Number.isFinite(mediaIdValue) || mediaIdValue <= 0) return null;
-    let entry = mangaRecommendationSessionCache.get(mediaIdValue);
+    if (!keyValue) return null;
+    let entry = mangaRecommendationSessionCache.get(keyValue);
     if (!entry && createIfMissing) {
       entry = createRecommendationSessionEntry();
-      mangaRecommendationSessionCache.set(mediaIdValue, entry);
+      mangaRecommendationSessionCache.set(keyValue, entry);
     }
     return entry ?? null;
   }
@@ -79,9 +83,11 @@
 
   function clonePageResult(pageResult: RecommendationPageResult) {
     return {
+      provider: pageResult.provider,
       nodes: Array.isArray(pageResult?.nodes) ? [...pageResult.nodes] : [],
       pageInfo: {
         hasNextPage: Boolean(pageResult?.pageInfo?.hasNextPage),
+        currentPage: pageResult.pageInfo.currentPage,
       },
     } satisfies RecommendationPageResult;
   }
@@ -102,19 +108,19 @@
     loadError = null;
   }
 
-  function getRenderStateForMediaId(
-    mediaIdValue: number,
+  function getRenderStateForKey(
+    keyValue: string,
   ): RecommendationRenderState | null {
-    if (mediaIdValue <= 0) return null;
+    if (!keyValue) return null;
 
-    if (mediaIdValue === mediaId) {
+    if (keyValue === recommendationKey) {
       return {
         nodes: recommendationNodes,
         visibleCount,
       };
     }
 
-    const cached = getRecommendationSessionEntry(mediaIdValue, false);
+    const cached = getRecommendationSessionEntry(keyValue, false);
     if (!cached) return null;
     const nodes = Array.isArray(cached.nodes)
       ? ([...cached.nodes] as RecommendationNode[])
@@ -128,8 +134,8 @@
     };
   }
 
-  function persistSessionEntry(mediaIdValue: number) {
-    const entry = getRecommendationSessionEntry(mediaIdValue);
+  function persistSessionEntry(keyValue: string) {
+    const entry = getRecommendationSessionEntry(keyValue);
     if (!entry) return;
 
     entry.nodes = [...recommendationNodes];
@@ -199,27 +205,30 @@
   }
 
   async function fetchRecommendationPage(
-    mediaIdValue: number,
     pageValue: number,
+    previousProvider?: "anilist" | "mangabaka",
   ): Promise<RecommendationPageResult> {
-    const result = await window.electronAPI.manga.anilistRecommendations(
-      mediaIdValue,
+    const result = await window.electronAPI.manga.recommendations(
+      { anilistId: mediaId || undefined, mangabakaId: mangabakaId || undefined },
       pageValue,
       ITEMS_PER_PAGE,
+      previousProvider,
     );
     return {
+      provider: result.provider,
       nodes: normalizeRecommendationNodes(result?.nodes ?? []),
       pageInfo: {
         hasNextPage: Boolean(result?.pageInfo?.hasNextPage),
+        currentPage: result.pageInfo.currentPage,
       },
     };
   }
 
   async function getRecommendationPage(
-    mediaIdValue: number,
+    keyValue: string,
     pageValue: number,
   ): Promise<RecommendationPageResult> {
-    const sessionEntry = getRecommendationSessionEntry(mediaIdValue);
+    const sessionEntry = getRecommendationSessionEntry(keyValue);
     if (!sessionEntry) {
       throw new Error("Missing recommendation session cache entry");
     }
@@ -230,19 +239,25 @@
     const inFlight = sessionEntry.pageRequests.get(pageValue);
     if (inFlight) return inFlight;
 
-    const request = fetchRecommendationPage(mediaIdValue, pageValue)
+    const request = fetchRecommendationPage(pageValue, sessionEntry.provider)
       .then((pageResult) => {
-        const activeEntry = getRecommendationSessionEntry(mediaIdValue);
-        if (activeEntry) {
+        const activeEntry = getRecommendationSessionEntry(keyValue, false);
+        if (activeEntry === sessionEntry) {
+          if (pageResult.provider !== activeEntry.provider && pageResult.pageInfo.currentPage === 1) {
+            activeEntry.pageCache.clear();
+            activeEntry.nodes = [];
+            activeEntry.nextPage = 1;
+          }
+          activeEntry.provider = pageResult.provider;
           const clonedPageResult = clonePageResult(pageResult);
-          activeEntry.pageCache.set(pageValue, clonedPageResult);
+          activeEntry.pageCache.set(pageResult.pageInfo.currentPage, clonedPageResult);
           activeEntry.nodes = mergeRecommendationNodeCollections(
             activeEntry.nodes as RecommendationNode[],
             clonedPageResult.nodes as RecommendationNode[],
           );
           activeEntry.nextPage = Math.max(
             Number(activeEntry.nextPage || 1),
-            pageValue + 1,
+            pageResult.pageInfo.currentPage + 1,
           );
           activeEntry.hasNextPage = clonedPageResult.pageInfo.hasNextPage;
         }
@@ -250,7 +265,7 @@
       })
       .finally(() => {
         const activeEntry = getRecommendationSessionEntry(
-          mediaIdValue,
+          keyValue,
           false,
         );
         if (activeEntry?.pageRequests.get(pageValue) === request) {
@@ -264,7 +279,7 @@
 
   function showLess() {
     visibleCount = ITEMS_PER_PAGE;
-    persistSessionEntry(mediaId);
+    persistSessionEntry(recommendationKey);
   }
 
   async function loadMore() {
@@ -274,26 +289,28 @@
         visibleCount + ITEMS_PER_PAGE,
         recommendationNodes.length,
       );
-      persistSessionEntry(mediaId);
+      persistSessionEntry(recommendationKey);
       return;
     }
-    if (isLoading || !mediaId) return;
+    if (isLoading || !recommendationKey) return;
 
     const token = requestToken;
-    const currentMediaId = mediaId;
+    const currentKey = recommendationKey;
+    const metadataRevision = mangaMetadataRevision;
     const currentPage = nextPage;
     isLoading = true;
     loadError = null;
     try {
-      const result = await getRecommendationPage(currentMediaId, currentPage);
-      if (token !== requestToken || currentMediaId !== mediaId) return;
+      const result = await getRecommendationPage(currentKey, currentPage);
+      if (token !== requestToken || currentKey !== recommendationKey || metadataRevision !== mangaMetadataRevision) return;
+      if (result.pageInfo.currentPage === 1) recommendationNodes = [];
       mergeRecommendationNodes(result.nodes as RecommendationNode[]);
       hasNextPage = result.pageInfo.hasNextPage;
-      nextPage = currentPage + 1;
+      nextPage = result.pageInfo.currentPage + 1;
       visibleCount = recommendationNodes.length;
-      persistSessionEntry(currentMediaId);
+      persistSessionEntry(currentKey);
     } catch (e: unknown) {
-      if (token !== requestToken || currentMediaId !== mediaId) return;
+      if (token !== requestToken || currentKey !== recommendationKey || metadataRevision !== mangaMetadataRevision) return;
       console.error(
         "[MangaRecommendations] Failed to load recommendations:",
         e,
@@ -310,13 +327,11 @@
   }
 
   $effect.pre(() => {
-    // Track only mediaId. Everything else (isLoading etc.) must NOT be
-    // be tracked here. This runs before the DOM updates so we don't briefly
-    // show the previous series' recommendation covers on fast back/forward.
-    const id = mediaId;
-    if (id > 0 && !renderedMediaIds.includes(id)) {
-      mangaRecommendationRenderedMediaIdsSession.add(id);
-      renderedMediaIds = [...renderedMediaIds, id];
+    // Reset before rendering to avoid flashing the previous series' covers.
+    const id = recommendationKey;
+    if (id && !renderedKeys.includes(id)) {
+      mangaRecommendationRenderedKeysSession.add(id);
+      renderedKeys = [...renderedKeys, id];
     }
     requestToken += 1;
     isLoading = false;
@@ -333,9 +348,9 @@
   });
 
   $effect(() => {
-    const id = mediaId;
+    const id = recommendationKey;
     const cached = getRecommendationSessionEntry(id, false);
-    if (id > 0) {
+    if (id) {
       const shouldBootstrap =
         !cached || !cached.pageCache.has(1) || cached.pageRequests.has(1);
       if (shouldBootstrap) {
@@ -345,7 +360,7 @@
   });
 </script>
 
-{#if recommendationNodes.length > 0 || isLoading || renderedMediaIds.length > 0}
+{#if recommendationNodes.length > 0 || isLoading || renderedKeys.length > 0}
   <section class="flex flex-col gap-4 mt-12">
     <div class="flex items-center justify-between px-2">
       <h2
@@ -378,12 +393,12 @@
         {/each}
       </div>
     {:else}
-      {#each renderedMediaIds as renderedMediaId (renderedMediaId)}
-        {@const renderState = getRenderStateForMediaId(renderedMediaId)}
+      {#each renderedKeys as renderedKey (renderedKey)}
+        {@const renderState = getRenderStateForKey(renderedKey)}
         {#if renderState && renderState.nodes.length > 0}
           <div
             class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-6"
-            style:display={renderedMediaId === mediaId ? "grid" : "none"}
+            style:display={renderedKey === recommendationKey ? "grid" : "none"}
           >
             {#each renderState.nodes.slice(0, renderState.visibleCount) as recNode (recNode?.id)}
               <MangaCard
@@ -421,6 +436,7 @@
       {#if loadError}
         <p class="text-center text-[11px] font-semibold text-rose-400 px-2">
           {loadError}
+          <button onclick={loadMore} disabled={isLoading} class="ml-2 text-blue-400 hover:text-blue-300 underline">Retry</button>
         </p>
       {/if}
       {#if visibleCount > ITEMS_PER_PAGE}

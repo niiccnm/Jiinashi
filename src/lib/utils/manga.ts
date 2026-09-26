@@ -51,13 +51,22 @@ export function normalizeSeriesTitleStyle(
   return "romaji";
 }
 
+/** Expand macron vowels without discarding vowel length or other accents.
+ * A macron alone cannot distinguish, for example, oo from ou.
+ */
+export function expandRomajiLongVowels(value: string): string {
+  return value.normalize("NFD")
+    .replace(/([aeiou])\u0304/gi, (_, vowel: string) => vowel + vowel)
+    .normalize("NFC");
+}
+
 export function resolveSeriesTitle(
   series: SeriesTitleSource | null | undefined,
   style: SeriesTitleStyle = "romaji",
   fallback = "Unknown Series",
 ): string {
   const english = String(series?.title_english || "").trim();
-  const romaji = String(series?.title_romaji || "").trim();
+  const romaji = expandRomajiLongVowels(String(series?.title_romaji || "").trim());
   const original = String(series?.title_original || "").trim();
 
   const orderedCandidates =

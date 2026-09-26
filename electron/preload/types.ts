@@ -102,8 +102,12 @@ export interface AniListCoverImage {
   large?: string | null;
 }
 
-export interface AniListRecommendationMedia {
+export interface MangaRecommendationMedia {
   id: number;
+  provider?: "anilist" | "mangabaka";
+  anilist_id?: number;
+  mangabaka_id?: number;
+  mal_id?: number;
   title: AniListTitle;
   coverImage?: AniListCoverImage | null;
   format?: string | null;
@@ -112,20 +116,21 @@ export interface AniListRecommendationMedia {
   countryOfOrigin?: string | null;
 }
 
-export interface AniListRecommendationNode {
+export interface MangaRecommendationNode {
   id: number;
   rating?: number | null;
-  mediaRecommendation: AniListRecommendationMedia;
+  mediaRecommendation: MangaRecommendationMedia;
 }
 
-export interface AniListRecommendationsPageInfo {
+export interface MangaRecommendationsPageInfo {
   hasNextPage: boolean;
   currentPage: number;
 }
 
-export interface AniListRecommendationsResponse {
-  nodes: AniListRecommendationNode[];
-  pageInfo: AniListRecommendationsPageInfo;
+export interface MangaRecommendationsResponse {
+  provider: "anilist" | "mangabaka";
+  nodes: MangaRecommendationNode[];
+  pageInfo: MangaRecommendationsPageInfo;
 }
 
 export interface AniListPageInfo {
@@ -225,8 +230,13 @@ export interface MangabakaSeriesRecord {
 }
 
 export interface MangabakaSearchPagination {
-  current_page: number;
-  last_page: number;
+  next?: string | null;
+  previous?: string | null;
+  page?: number;
+  limit?: number;
+  count?: number;
+  current_page?: number;
+  last_page?: number;
   per_page?: number;
   total?: number;
 }
@@ -716,15 +726,17 @@ export interface ElectronAPI {
       limit?: number,
     ) => Promise<MangabakaSearchResponse>;
     anilistTrending: (page: number) => Promise<AniListMediaPageResponse>;
+    mangabakaBrowse: (mode: "trending" | "popular", page: number) => Promise<MangabakaSearchResponse>;
     anilistPopular: (page: number) => Promise<AniListMediaPageResponse>;
+    metadataDetails: (identity: { seriesId?: number; anilistId?: number; malId?: number; mangabakaId?: number }) => Promise<AniListLikeDetail | null>;
     anilistDetails: (id: number) => Promise<AniListLikeDetail | null>;
-    mangabakaDetails: (id: number) => Promise<AniListLikeDetail | null>;
     searchMalIdByTitle: (anilistId: number) => Promise<number | null>;
-    anilistRecommendations: (
-      id: number,
+    recommendations: (
+      identity: { anilistId?: number; mangabakaId?: number },
       page: number,
       perPage: number,
-    ) => Promise<AniListRecommendationsResponse>;
+      previousProvider?: "anilist" | "mangabaka",
+    ) => Promise<MangaRecommendationsResponse>;
     getIncognito: () => Promise<boolean>;
     setIncognito: (value: boolean) => Promise<boolean>;
   };

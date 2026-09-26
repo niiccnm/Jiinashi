@@ -1,3 +1,5 @@
+import { onDestroy } from "svelte";
+import { onMangaMetadataInvalidated } from "../mangaSeriesSessionCache";
 import {
   formatMangaStatus,
   getReadingFormatLabel,
@@ -644,6 +646,14 @@ export function createMlvController(initialInputs: MlvControllerInputs = {}) {
   ) {
     await mlvLoadSeriesDetail(actionContext, seriesItem, options);
   }
+
+  const unsubscribeMetadataInvalidation = onMangaMetadataInvalidated(() => {
+    if (selectedSeries) {
+      activeDetailSeriesId = null;
+      void loadSeriesDetail(selectedSeries, { background: true });
+    }
+  });
+  onDestroy(unsubscribeMetadataInvalidation);
 
   function toggleViewMode() {
     displayController.toggleViewMode();

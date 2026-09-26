@@ -21,13 +21,16 @@ export interface SeriesSessionCacheEntry {
 
 export interface RecommendationSessionPageResult {
   nodes: any[];
+  provider: "anilist" | "mangabaka";
   pageInfo: {
     hasNextPage: boolean;
+    currentPage: number;
   };
 }
 
 export interface RecommendationSessionEntry {
   nodes: any[];
+  provider?: "anilist" | "mangabaka";
   pageCache: Map<number, RecommendationSessionPageResult>;
   pageRequests: Map<number, Promise<RecommendationSessionPageResult>>;
   nextPage: number;
@@ -37,16 +40,32 @@ export interface RecommendationSessionEntry {
 
 // Renderer-session cache, shared across MangaSeriesView mounts.
 export const mangaSeriesSessionCache = new Map<
-  number,
+  string,
   SeriesSessionCacheEntry
 >();
 
-// Renderer-session cache for AniList recommendations, shared across mounts.
+// Include provider names in cache keys to avoid ID collisions.
 export const mangaRecommendationSessionCache = new Map<
-  number,
+  string,
   RecommendationSessionEntry
 >();
 
-// Renderer-session list of recommendation media ids whose grids should stay
-// retained across MangaRecommendations remounts.
-export const mangaRecommendationRenderedMediaIdsSession = new Set<number>();
+// Retain visited recommendation grids across component remounts.
+export const mangaRecommendationRenderedKeysSession = new Set<string>();
+
+// Reject stale responses after provider or content-filter changes.
+export let mangaMetadataRevision = 0;
+const metadataInvalidationListeners = new Set<() => void>();
+
+export function onMangaMetadataInvalidated(listener: () => void) {
+  metadataInvalidationListeners.add(listener);
+  return () => metadataInvalidationListeners.delete(listener);
+}
+
+export function invalidateMangaMetadataCache() {
+  mangaMetadataRevision += 1;
+  mangaSeriesSessionCache.clear();
+  mangaRecommendationSessionCache.clear();
+  mangaRecommendationRenderedKeysSession.clear();
+  for (const listener of metadataInvalidationListeners) listener();
+}

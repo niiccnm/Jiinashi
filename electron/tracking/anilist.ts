@@ -164,6 +164,7 @@ export class AniListService {
     query: string,
     variables: any = {},
     accessToken?: string,
+    timeoutMs = ANILIST_REQUEST_TIMEOUT_MS,
   ) {
     const now = Date.now();
     if (this.rateLimitedUntilMs > now) {
@@ -183,7 +184,7 @@ export class AniListService {
             variables,
           },
           {
-            timeout: ANILIST_REQUEST_TIMEOUT_MS,
+            timeout: timeoutMs,
             headers: accessToken
               ? {
                   Authorization: `Bearer ${accessToken}`,
@@ -221,7 +222,7 @@ export class AniListService {
           errorMessage.includes("timeout")
         ) {
           const timeoutError = new Error(
-            `AniList request timed out after ${Math.ceil(ANILIST_REQUEST_TIMEOUT_MS / 1000)}s`,
+            `AniList request timed out after ${Math.ceil(timeoutMs / 1000)}s`,
           ) as HttpStatusError;
           timeoutError.status = 408;
           throw timeoutError;
@@ -375,6 +376,17 @@ export class AniListService {
       );
     }
     return data.Page;
+  }
+
+  async getArtwork(id: number) {
+    const data = await this.query(`
+      query ($id: Int) {
+        Media(id: $id, type: MANGA) {
+          bannerImage
+        }
+      }
+    `, { id }, undefined, 4_000);
+    return data?.Media ?? null;
   }
 
   async getDetails(id: number) {

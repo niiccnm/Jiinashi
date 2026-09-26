@@ -219,7 +219,14 @@ export function registerMangaIpcHandlers({
           .toUpperCase() || null,
       chapters: toPositiveInt(series?.total_chapters) || null,
       volumes: toPositiveInt(series?.final_volume) || null,
-      staff: { edges: [] },
+      staff: {
+        edges: [
+          ...((Array.isArray(series?.authors) ? series.authors : []) as string[])
+            .map((name) => ({ role: "Story", node: { name: { full: name } } })),
+          ...((Array.isArray(series?.artists) ? series.artists : []) as string[])
+            .map((name) => ({ role: "Art", node: { name: { full: name } } })),
+        ],
+      },
       externalLinks,
       averageScore,
       startDate: { year: year || null },
@@ -323,44 +330,94 @@ export function registerMangaIpcHandlers({
     return entry.detail ?? null;
   };
 
-  const logAniListDetailRateLimit = (
-    anilistId: number,
-    retryAfterMs: number,
-    fallback: "cached" | "db" | "null",
-    reason: "cooldown" | "429",
-  ) => {
-    console.warn(
-      `[manga:anilist-details] rateLimited=true id=${anilistId} fallback=${fallback} retryAfterMs=${retryAfterMs} reason=${reason}`,
-    );
+  const anilistArtworkCache = new Map<number, {
+    artwork: any;
+    fetchedAtMs: number;
+    retryAtMs: number;
+  }>();
+
+  const enrichMangabakaArtwork = async (detail: any, requestArtwork: boolean) => {
+    const anilistId = toPositiveInt(detail?.id);
+    const saved = (anilistId ? mangaQueries.getMangaSeriesByAnilistId(anilistId) : null) ||
+      mangaQueries.getMangaSeriesByMangabakaId(toPositiveInt(detail?.idMangabaka));
+    let artwork = anilistId
+      ? readCachedAnilistDetail(anilistId, ANILIST_DETAIL_FRESH_TTL_MS)
+      : null;
+    const cached = anilistArtworkCache.get(anilistId);
+    if (!artwork && cached && Date.now() - cached.fetchedAtMs < ANILIST_DETAIL_FRESH_TTL_MS) {
+      artwork = cached.artwork;
+    }
+    if (!artwork && anilistId && requestArtwork &&
+        anilistCooldownUntilMs <= Date.now() && (!cached || cached.retryAtMs <= Date.now())) {
+      try {
+        artwork = await anilistService.getArtwork(anilistId);
+        anilistArtworkCache.set(anilistId, {
+          artwork,
+          fetchedAtMs: Date.now(),
+          retryAtMs: Date.now() + ANILIST_DETAIL_FRESH_TTL_MS,
+        });
+      } catch {
+        anilistArtworkCache.set(anilistId, {
+          artwork: cached?.artwork || null,
+          fetchedAtMs: cached?.fetchedAtMs || 0,
+          retryAtMs: Date.now() + ANILIST_DETAIL_DEFAULT_RETRY_MS,
+        });
+      }
+    }
+    artwork ||= anilistId ? readCachedAnilistDetail(anilistId, ANILIST_DETAIL_STALE_TTL_MS) : null;
+    if (!artwork && cached && Date.now() - cached.fetchedAtMs < ANILIST_DETAIL_STALE_TTL_MS) {
+      artwork = cached.artwork;
+    }
+    return {
+      ...detail,
+      bannerImage: artwork?.bannerImage || saved?.banner_url || detail.bannerImage,
+    };
   };
 
-  const resolveAniListDetailFallback = (
-    anilistId: number,
-    retryAfterMs: number,
-    reason: "cooldown" | "429",
-  ): any | null => {
-    const staleCached = readCachedAnilistDetail(
-      anilistId,
-      ANILIST_DETAIL_STALE_TTL_MS,
-    );
-    if (staleCached) {
-      logAniListDetailRateLimit(anilistId, retryAfterMs, "cached", reason);
-      return staleCached;
+  const getMangabakaDetails = async (identity: {
+    anilistId?: number;
+    malId?: number;
+    mangabakaId?: number;
+  }, requestArtwork = true) => {
+    let series: any = null;
+    if (identity.mangabakaId) {
+      const payload = await mangabakaMetadataService.getSeries(identity.mangabakaId, { throwOnError: true });
+      series = payload?.data || payload;
+      if (!toPositiveInt(series?.id)) series = null;
     }
+    if (!series && identity.anilistId) {
+      series = await mangabakaMetadataService.getSeriesByAniListId(identity.anilistId, { throwOnError: true });
+    }
+    if (!series && identity.malId) {
+      series = await mangabakaMetadataService.getSeriesByMalId(identity.malId, { throwOnError: true });
+    }
+    const detail = toPositiveInt(series?.id) ? mapMangabakaToAnilistLikeDetail(series) : null;
+    return detail ? enrichMangabakaArtwork({
+      ...detail,
+      id: toPositiveInt(identity.anilistId) || detail.id,
+      idMal: toPositiveInt(identity.malId) || detail.idMal,
+    }, requestArtwork) : null;
+  };
 
+  const resolveAniListDetailFallback = async (
+    anilistId: number,
+    identity: { malId?: number; mangabakaId?: number } = {},
+  ) => {
     const dbSeries = mangaQueries.getMangaSeriesByAnilistId(anilistId);
-    const dbFallback = mapSeriesToAnilistLikeDetail(dbSeries);
-    logAniListDetailRateLimit(
+    const savedDetail = readCachedAnilistDetail(anilistId, ANILIST_DETAIL_STALE_TTL_MS) ||
+      mapSeriesToAnilistLikeDetail(dbSeries);
+    if (savedDetail) return savedDetail;
+
+    return await getMangabakaDetails({
       anilistId,
-      retryAfterMs,
-      dbFallback ? "db" : "null",
-      reason,
-    );
-    return dbFallback;
+      malId: toPositiveInt(identity.malId),
+      mangabakaId: toPositiveInt(identity.mangabakaId),
+    }, false).catch(() => null);
   };
 
   const getAnilistDetailsResilient = async (
     id: number,
+    identity: { malId?: number; mangabakaId?: number } = {},
   ): Promise<any | null> => {
     const anilistId = toPositiveInt(id);
     if (anilistId <= 0) return null;
@@ -373,11 +430,7 @@ export function registerMangaIpcHandlers({
 
     const now = Date.now();
     if (anilistCooldownUntilMs > now) {
-      return resolveAniListDetailFallback(
-        anilistId,
-        anilistCooldownUntilMs - now,
-        "cooldown",
-      );
+      return await resolveAniListDetailFallback(anilistId, identity);
     }
 
     const inFlight = anilistDetailInFlight.get(anilistId);
@@ -386,11 +439,13 @@ export function registerMangaIpcHandlers({
     const requestPromise = (async () => {
       try {
         const detail = await anilistService.getDetails(anilistId);
+        if (!detail) return await resolveAniListDetailFallback(anilistId, identity);
+        const enrichedDetail = await enrichDetailWithMangabakaIdentity(detail);
         anilistDetailCache.set(anilistId, {
-          detail,
+          detail: enrichedDetail,
           fetchedAtMs: Date.now(),
         });
-        return detail ?? null;
+        return enrichedDetail;
       } catch (error) {
         if (isAniListRateLimitError(error)) {
           const retryAfterMs = getRetryAfterMs(error);
@@ -398,7 +453,7 @@ export function registerMangaIpcHandlers({
             anilistCooldownUntilMs,
             Date.now() + retryAfterMs,
           );
-          return resolveAniListDetailFallback(anilistId, retryAfterMs, "429");
+          return await resolveAniListDetailFallback(anilistId, identity);
         }
 
         const status = Number(
@@ -410,7 +465,7 @@ export function registerMangaIpcHandlers({
         console.error(
           `[manga:anilist-details] failed id=${anilistId} status=${status || "n/a"} message=${message}`,
         );
-        throw error;
+        return await resolveAniListDetailFallback(anilistId, identity);
       } finally {
         anilistDetailInFlight.delete(anilistId);
       }
@@ -768,33 +823,111 @@ export function registerMangaIpcHandlers({
   ipcMain.handle(
     "manga:mangabaka-search",
     (_, query: string, page: number, limit = 10) =>
-      mangabakaMetadataService.search(query, page, limit),
+      mangabakaMetadataService.search(query, page, limit, undefined, getSetting("mangabaka_hide_hentai") !== "false"),
   );
   ipcMain.handle("manga:anilist-trending", (_, page: number) =>
     anilistService.getTrending(page),
   );
+  ipcMain.handle("manga:mangabaka-browse", (_, mode: "trending" | "popular", page: number) =>
+    mangabakaMetadataService.browse(mode, page, getSetting("mangabaka_hide_hentai") !== "false"),
+  );
   ipcMain.handle("manga:anilist-popular", (_, page: number) =>
     anilistService.getPopular(page),
   );
-  ipcMain.handle("manga:anilist-details", async (_, id: number) => {
-    const detail = await getAnilistDetailsResilient(id);
-    return enrichDetailWithMangabakaIdentity(detail);
-  });
-  ipcMain.handle("manga:mangabaka-details", async (_, id: number) => {
-    const detail = await mangabakaMetadataService.getSeries(id);
-    const mapped = mapMangabakaToAnilistLikeDetail(detail?.data || detail);
-    if (mapped) return mapped;
+  const getMetadataDetails = async (identity: {
+    seriesId?: number;
+    anilistId?: number;
+    malId?: number;
+    mangabakaId?: number;
+  }) => {
+    const dbSeries = identity.seriesId
+      ? mangaQueries.getMangaSeries(identity.seriesId)
+      : (identity.anilistId ? mangaQueries.getMangaSeriesByAnilistId(identity.anilistId) : null) ||
+        (identity.mangabakaId ? mangaQueries.getMangaSeriesByMangabakaId(identity.mangabakaId) : null) ||
+        (identity.malId ? mangaQueries.getMangaSeriesByMalId(identity.malId) : null);
+    const ids = {
+      anilistId: toPositiveInt(identity.anilistId || dbSeries?.anilist_id),
+      malId: toPositiveInt(identity.malId || dbSeries?.mal_id),
+      mangabakaId: toPositiveInt(identity.mangabakaId || dbSeries?.mangabaka_id),
+    };
+    if (getSetting("manga_metadata_provider") === "mangabaka" || !ids.anilistId) {
+      return await getMangabakaDetails(ids).catch(() => null) ||
+        readCachedAnilistDetail(ids.anilistId, ANILIST_DETAIL_STALE_TTL_MS) ||
+        mapSeriesToAnilistLikeDetail(dbSeries);
+    }
+    return await getAnilistDetailsResilient(ids.anilistId, ids) ||
+      mapSeriesToAnilistLikeDetail(dbSeries);
+  };
 
-    const dbSeries = mangaQueries.getMangaSeriesByMangabakaId(
-      toPositiveInt(id),
-    );
-    return mapSeriesToAnilistLikeDetail(dbSeries);
-  });
-  ipcMain.handle(
-    "manga:anilist-recommendations",
-    (_, id: number, page: number, perPage: number) =>
-      anilistService.getRecommendations(id, page, perPage),
+  ipcMain.handle("manga:metadata-details", (_, identity) =>
+    getMetadataDetails(identity || {}),
   );
+  ipcMain.handle("manga:anilist-details", (_, id: number) =>
+    getMetadataDetails({ anilistId: toPositiveInt(id) }),
+  );
+  ipcMain.handle("manga:recommendations", async (
+    _, identity: { anilistId?: number; mangabakaId?: number },
+    page = 1, perPage = 5, previousProvider?: "anilist" | "mangabaka",
+  ) => {
+    const anilistId = toPositiveInt(identity?.anilistId);
+    let mangabakaId = toPositiveInt(identity?.mangabakaId);
+    let currentPage = toPositiveInt(page) || 1;
+    const limit = Math.min(24, toPositiveInt(perPage) || 5);
+    const useMangabaka = getSetting("manga_metadata_provider") === "mangabaka" ||
+      previousProvider === "mangabaka" || !anilistId;
+    if (!useMangabaka) {
+      for (let attempt = 1;
+        attempt <= 3 && getSetting("manga_metadata_provider") !== "mangabaka";
+        attempt++) {
+        try {
+          const result = await anilistService.getRecommendations(anilistId, currentPage, limit);
+          if (!Array.isArray(result?.nodes)) throw new Error("Invalid AniList recommendations");
+          return { ...result, provider: "anilist" };
+        } catch (error) {
+          if (attempt < 3) {
+            // Wait out AniList's cooldown before retrying.
+            const delayMs = isAniListRateLimitError(error) ? getRetryAfterMs(error) : 1_000;
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+        }
+      }
+      // Restart at page one because the providers rank titles differently.
+      currentPage = 1;
+    }
+    if (!mangabakaId && anilistId) {
+      const series = await mangabakaMetadataService.getSeriesByAniListId(anilistId);
+      mangabakaId = toPositiveInt(series?.id);
+      if (!mangabakaId) throw new Error("Could not find MangaBaka recommendations for this series");
+    }
+    const result = await mangabakaMetadataService.getRecommendations(mangabakaId, getSetting("mangabaka_hide_hentai") !== "false");
+    if (!Array.isArray(result?.data)) throw new Error("Invalid MangaBaka recommendations");
+    const nodes = result.data.flatMap((entry: any) => {
+      const series = entry?.series;
+      const id = toPositiveInt(series?.id);
+      if (!id || id === mangabakaId) return [];
+      const detail = mapMangabakaToAnilistLikeDetail(series);
+      if (!detail) return [];
+      return [{ id, mediaRecommendation: {
+        ...detail,
+        // Use resized covers for recommendation cards.
+        coverImage: {
+          ...detail.coverImage,
+          extraLarge: detail.coverImage.large || detail.coverImage.extraLarge,
+        },
+        id,
+        provider: "mangabaka",
+        mangabaka_id: id,
+        anilist_id: detail.id || undefined,
+        mal_id: detail.idMal || undefined,
+      } }];
+    });
+    const start = (currentPage - 1) * limit;
+    return {
+      nodes: nodes.slice(start, start + limit),
+      pageInfo: { currentPage, hasNextPage: start + limit < nodes.length },
+      provider: "mangabaka",
+    };
+  });
   ipcMain.handle("manga:search-mal-id-by-title", (_, anilistId: number) =>
     trackingService.searchMalIdByTitle(anilistId),
   );

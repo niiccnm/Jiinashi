@@ -110,10 +110,11 @@
 
   function getMangaNavKey(selection: any | null) {
     if (!selection) return "";
+    const provider = String(selection?.provider || "anilist");
     const id = String(selection?.id || "").trim();
     const sourceUrl = String(selection?.source_url || "").trim();
     const title = String(selection?.title || "").trim();
-    return `${id}|${sourceUrl}|${title}`;
+    return `${provider}|${id}|${sourceUrl}|${title}`;
   }
 
   function createMangaNavEntry(

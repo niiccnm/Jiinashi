@@ -525,7 +525,7 @@
               <span
                 class="px-3 py-1.5 bg-slate-950/50 border border-slate-800/50 rounded-xl text-xs font-medium uppercase tracking-normal text-slate-300 hover:text-white hover:border-blue-500/30 transition-all cursor-default"
               >
-                {genre}
+                {String(genre).replace(/_+/g, " ")}
               </span>
             {/each}
           </div>
@@ -913,9 +913,10 @@
       </div>
     {/if}
 
-    {#if detail?.id}
+    {#if detail?.id || detail?.idMangabaka}
       <MangaRecommendations
-        mediaId={detail.id}
+        mediaId={detail.id || 0}
+        mangabakaId={detail.idMangabaka || 0}
         {seriesTitleStyle}
         onSelectManga={onSelectMangaHandler ?? (() => {})}
       />

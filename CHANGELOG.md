@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Image Fidelity**: Removes color without adding contrast, shifting brightness, clipping tones, or modifying the source image.
   - **Files Modified**: `electron/app-windows.ts`, `electron/preload/bridge-misc.ts`, `electron/preload/types.ts`, `src/lib/components/Reader/ReaderSettings.svelte`, `src/lib/components/Reader/SinglePageCanvas.svelte`, `src/lib/components/Reader/DoublePageCanvas.svelte`, `src/lib/components/Reader/WebtoonCanvas.svelte`, `src/lib/views/Reader.svelte`.
 
+- **MangaBaka Information Source**: Expanded MangaBaka integration with an option to use it as the manga information source in Manga & tracking settings. AniList remains the default.
+  - **Browsing and Recommendations**: Expanded MangaBaka support with Trending, All Time, and recommendations. It also provides fallback results when AniList is unavailable, with up to three AniList attempts for recommendations. AniList searches continue to include MangaBaka-only titles.
+  - **Series and Library Details**: Use MangaBaka for series and library details, including titles without an AniList ID, while keeping available AniList backdrop banners.
+  - **Cover Loading**: Prefer smaller MangaBaka covers for browsing and recommendations when available, keeping larger artwork for series and library details.
+  - **Tags and Synopses**: Show spaces in multiword tags and format inline emphasis and escaped punctuation in MangaBaka downloader synopses.
+  - **Content Filter**: Hide Hentai-tagged MangaBaka results by default, with a toggle in Manga & tracking settings to show them.
+  - **Key Files Modified**: `electron/manga-ipc.ts`, `electron/metadata/mangabaka.ts`, `electron/tracking/anilist.ts`, `electron/library/manga-linker/title-utils.ts`, `electron/preload/`, `src/lib/components/manga/`, `src/lib/utils/manga.ts`, `src/lib/views/Downloader.svelte`, `src/lib/views/settings/`, `src/lib/views/settingsCatalog.ts`.
+
+- **Manga Browsing: Show Less**: Added "Show Less" to the Downloader's Trending and All Time tabs, with button spacing matching recommendations. Collapses the list to 20 titles and reuses loaded results when expanded again.
+  - **Files Modified**: `src/lib/components/manga/MetadataBrowser.svelte`.
+
 ### Changed
 
 - **Reader Settings Panel**: Redesigned the reader settings panel with a cleaner layout and faster, smoother transitions while preserving the reader's existing behavior.
@@ -78,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Library Navigation**: Removed a brief delay when restoring the saved scroll position after navigating back.
   - **Files Created**: `src/lib/utils/retainedCover.ts`, `src/lib/components/Library/FilterEmptyState.svelte`.
   - **Files Modified**: `src/lib/views/Library.svelte`, `src/lib/views/Favorites.svelte`, `src/lib/views/Recent.svelte`, `src/lib/views/Tags.svelte`, `src/lib/components/Library/LibraryGridItem.svelte`.
+
+- **Manga Browsing Pagination**: Keeps loaded results and "Load More" available after a failed request or an unexpectedly empty AniList continuation page. Users can retry the same page without switching tabs.
+  - **Files Modified**: `src/lib/components/manga/MetadataBrowser.svelte`.
 
 ### Security
 - Vulnerability fixes

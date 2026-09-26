@@ -138,14 +138,16 @@ export function createMangaBridge(): ElectronAPI["manga"] {
       call("manga:anilist-search", query, page),
     mangabakaSearch: (query: string, page: number, limit?: number) =>
       call("manga:mangabaka-search", query, page, limit),
+    mangabakaBrowse: (mode: "trending" | "popular", page: number) =>
+      call("manga:mangabaka-browse", mode, page),
     anilistTrending: (page: number) => call("manga:anilist-trending", page),
     anilistPopular: (page: number) => call("manga:anilist-popular", page),
+    metadataDetails: (identity: { seriesId?: number; anilistId?: number; malId?: number; mangabakaId?: number }) => call("manga:metadata-details", identity),
     anilistDetails: (id: number) => call("manga:anilist-details", id),
-    mangabakaDetails: (id: number) => call("manga:mangabaka-details", id),
     searchMalIdByTitle: (anilistId: number) =>
       call("manga:search-mal-id-by-title", anilistId),
-    anilistRecommendations: (id: number, page: number, perPage: number) =>
-      call("manga:anilist-recommendations", id, page, perPage),
+    recommendations: (identity: { anilistId?: number; mangabakaId?: number }, page: number, perPage: number, previousProvider?: "anilist" | "mangabaka") =>
+      call("manga:recommendations", identity, page, perPage, previousProvider),
     getIncognito: () => call("manga:get-incognito"),
     setIncognito: (value: boolean) => call("manga:set-incognito", value),
   };

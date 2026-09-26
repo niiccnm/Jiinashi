@@ -1,5 +1,6 @@
 <script module lang="ts">
   import type { SeriesTitleStyle as MetadataSeriesTitleStyle } from "../../utils/manga";
+  import { onMangaMetadataInvalidated } from "./mangaSeriesSessionCache";
 
   type MetadataBrowserTab = "trending" | "popular" | "search";
 
@@ -9,13 +10,23 @@
     searchResults: any[];
     page: number;
     hasNextPage: boolean;
+    visibleCount: number;
     seriesTitleStyle: MetadataSeriesTitleStyle;
+    metadataProvider: "anilist" | "mangabaka";
+    browseProvider: "anilist" | "mangabaka";
   }
 
   let sessionSnapshot: MetadataBrowserSessionSnapshot | null = null;
   // Keep request IDs across Manga tab remounts to reject stale results.
   let resultsRequestId = 0;
   let pendingResultsReset: boolean | null = null;
+
+  // Invalidate retained results even while the browser is unmounted.
+  onMangaMetadataInvalidated(() => {
+    sessionSnapshot = null;
+    resultsRequestId += 1;
+    pendingResultsReset = true;
+  });
 
   function getSessionSnapshot() {
     if (!sessionSnapshot) return null;
@@ -45,6 +56,7 @@
   import MangaCard from "./MangaCard.svelte";
   import { toasts } from "../../stores/toast";
   import {
+    expandRomajiLongVowels,
     formatMangaStatus,
     normalizeSeriesTitleStyle,
     resolveSeriesTitle,
@@ -67,8 +79,13 @@
   let activeTab = $state<MetadataBrowserTab>("trending");
   let page = $state(1);
   let hasNextPage = $state(true);
+  let loadError = $state<string | null>(null);
+  const ITEMS_PER_PAGE = 20;
+  let visibleCount = $state(ITEMS_PER_PAGE);
   let searchTimeout = $state<any>(null);
   let seriesTitleStyle = $state<SeriesTitleStyle>("romaji");
+  let metadataProvider = $state<"anilist" | "mangabaka">("anilist");
+  let browseProvider = $state<"anilist" | "mangabaka">("anilist");
   const INITIAL_COVER_COUNT = 8;
   const INITIAL_COVER_TIMEOUT_MS = 750;
 
@@ -86,7 +103,10 @@
       searchResults,
       page,
       hasNextPage,
+      visibleCount,
       seriesTitleStyle,
+      metadataProvider,
+      browseProvider,
     });
   }
 
@@ -102,7 +122,10 @@
     const parsedPage = Number(snapshot.page || 1);
     page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     hasNextPage = Boolean(snapshot.hasNextPage);
+    visibleCount = snapshot.visibleCount || ITEMS_PER_PAGE;
     seriesTitleStyle = normalizeSeriesTitleStyle(snapshot.seriesTitleStyle);
+    metadataProvider = snapshot.metadataProvider || "anilist";
+    browseProvider = snapshot.browseProvider || metadataProvider;
     return true;
   }
 
@@ -262,7 +285,8 @@
     for (const result of results) {
       const keys = new Set(collectIdentityKeys(result));
       const titleFingerprints = new Set(collectTitleFingerprints(result));
-      const cover = normalizeCoverUrl(getCoverUrl(result));
+      // Deduplicate using original covers, not resized thumbnails.
+      const cover = normalizeCoverUrl(result?.coverImage?.extraLarge || getCoverUrl(result));
 
       let matchIndex = -1;
       for (let i = 0; i < deduped.length; i++) {
@@ -300,7 +324,7 @@
           ...titleFingerprints,
           ...collectTitleFingerprints(merged),
         ]),
-        cover: normalizeCoverUrl(getCoverUrl(merged)) || existing.cover || cover,
+        cover: normalizeCoverUrl(merged?.coverImage?.extraLarge || getCoverUrl(merged)) || existing.cover || cover,
       };
     }
 
@@ -308,7 +332,7 @@
   }
 
   function normalizeText(value: unknown) {
-    return String(value || "")
+    return expandRomajiLongVowels(String(value || ""))
       .toLowerCase()
       .normalize("NFKD")
       .replace(/[\u0300-\u036f]/g, "")
@@ -343,11 +367,11 @@
   function getCoverUrl(manga: any) {
     if (String(manga?.provider || "").toLowerCase() === "mangabaka") {
       return (
+        manga?.cover?.x350?.x2 ||
+        manga?.cover?.x350?.x1 ||
         manga?.coverImage?.extraLarge ||
         manga?.coverImage?.large ||
-        manga?.cover?.raw?.url ||
-        manga?.cover?.x350?.x2 ||
-        manga?.cover?.x350?.x1
+        manga?.cover?.raw?.url
       );
     }
     return manga?.coverImage?.extraLarge || manga?.coverImage?.large;
@@ -379,14 +403,6 @@
       .map(getCoverUrl)
       .filter((src): src is string => Boolean(src));
     await Promise.all(sources.map(preloadCover));
-  }
-
-  function getSubtitle(manga: any) {
-    const status = formatMangaStatus(manga?.status);
-    if (String(manga?.provider || "").toLowerCase() === "mangabaka") {
-      return status ? `Mangabaka • ${status}` : "Mangabaka";
-    }
-    return status;
   }
 
   function normalizeAnilistMedia(media: any) {
@@ -439,8 +455,29 @@
     }
   }
 
+  async function refreshMetadataProvider(requestId = resultsRequestId) {
+    const value = await window.electronAPI.settings.get("manga_metadata_provider").catch(() => null);
+    if (requestId !== resultsRequestId) return false;
+    const next = value === "mangabaka" ? "mangabaka" : "anilist";
+    const changed = next !== metadataProvider;
+    metadataProvider = next;
+    return changed;
+  }
+
+  function mangabakaHasNext(payload: any) {
+    const pagination = payload?.pagination;
+    // Older cached responses use current_page/last_page.
+    if (pagination && "next" in pagination) {
+      return Boolean(pagination.next) && Number(pagination.page || 1) * Number(pagination.limit || 10) < 12_000;
+    }
+    return Number(pagination?.current_page || 0) < Number(pagination?.last_page || 0);
+  }
+
   // --- Methods ---
   async function refreshResults(resetPage = true, force = false) {
+    let appendRequest = !resetPage;
+    const previousPage = Math.max(1, page - 1);
+    const previousBrowseProvider = browseProvider;
     const requestId = ++resultsRequestId;
     pendingResultsReset = resetPage;
     if (force) {
@@ -451,18 +488,31 @@
       page = 1;
     }
     isLoading = true;
+    loadError = null;
 
     try {
-      await refreshSeriesTitleStyle();
+      const [, providerChanged] = await Promise.all([refreshSeriesTitleStyle(), refreshMetadataProvider()]);
       if (requestId !== resultsRequestId) return;
+      if (providerChanged) {
+        appendRequest = false;
+        resetPage = true;
+        page = 1;
+      }
+      if (resetPage) browseProvider = metadataProvider;
       let res;
       if (activeTab === "search" && searchQuery) {
         const [anilistResult, mangabakaResult] = await Promise.allSettled([
-          window.electronAPI.manga.anilistSearch(searchQuery, page),
+          metadataProvider === "anilist"
+            ? window.electronAPI.manga.anilistSearch(searchQuery, page)
+            : Promise.resolve(null),
           window.electronAPI.manga.mangabakaSearch(searchQuery, page, 10),
         ]);
         if (requestId !== resultsRequestId) return;
 
+        if (mangabakaResult.status === "rejected" &&
+            (metadataProvider === "mangabaka" || anilistResult.status === "rejected")) {
+          throw mangabakaResult.reason;
+        }
         const anilistMedia =
           anilistResult.status === "fulfilled" &&
           Array.isArray(anilistResult.value?.media)
@@ -485,43 +535,68 @@
           anilistResult.status === "fulfilled"
             ? Boolean(anilistResult.value?.pageInfo?.hasNextPage)
             : false;
-        const mangabakaHasNext =
+        const hasMoreMangabaka =
           mangabakaResult.status === "fulfilled"
-            ? Number(mangabakaResult.value?.pagination?.current_page || 0) <
-              Number(mangabakaResult.value?.pagination?.last_page || 0)
+            ? mangabakaHasNext(mangabakaResult.value)
             : false;
-        hasNextPage = anilistHasNext || mangabakaHasNext;
+        hasNextPage = anilistHasNext || hasMoreMangabaka;
         persistSessionSnapshot();
         return;
-      } else if (activeTab === "trending") {
-        res = await window.electronAPI.manga.anilistTrending(page);
-      } else {
-        res = await window.electronAPI.manga.anilistPopular(page);
+      }
+      const mode = activeTab === "trending" ? "trending" : "popular";
+      if (browseProvider === "anilist") {
+        try {
+          res = mode === "trending"
+            ? await window.electronAPI.manga.anilistTrending(page)
+            : await window.electronAPI.manga.anilistPopular(page);
+          if (!Array.isArray(res?.media)) throw new Error("Invalid AniList results");
+          // AniList can return an empty first page during an outage without an error.
+          if (page === 1 && res.media.length === 0) throw new Error("Empty AniList discovery results");
+        } catch {
+          if (requestId !== resultsRequestId) return;
+          // Restart at page one because the providers rank titles differently.
+          browseProvider = "mangabaka";
+          page = 1;
+          resetPage = true;
+        }
+      }
+      if (browseProvider === "mangabaka") {
+        const payload = await window.electronAPI.manga.mangabakaBrowse(mode, page);
+        if (!Array.isArray(payload?.data)) throw new Error("Invalid MangaBaka results");
+        res = { media: payload.data.map(normalizeMangabakaSeries), pageInfo: { hasNextPage: mangabakaHasNext(payload) } };
       }
       if (requestId !== resultsRequestId) return;
 
-      if (res && res.media) {
-        const mapped = res.media.map(normalizeAnilistMedia);
-        if (resetPage) {
-          searchResults = mapped;
-        } else {
-          searchResults = [...searchResults, ...mapped];
-        }
-        hasNextPage = res.pageInfo.hasNextPage;
-      } else {
-        console.warn("No results or invalid format:", res);
-        hasNextPage = false;
-        if (resetPage) searchResults = [];
+      if (!res) throw new Error("No metadata response");
+      // Keep an empty AniList continuation retryable; it may be an outage.
+      if (appendRequest && browseProvider === "anilist" && res.media.length === 0) {
+        throw new Error("Empty AniList discovery page");
       }
+      const mapped = browseProvider === "mangabaka"
+        ? res.media
+        : res.media.map(normalizeAnilistMedia);
+      if (resetPage) {
+        searchResults = mapped;
+      } else {
+        searchResults = [...searchResults, ...mapped];
+      }
+      visibleCount = resetPage ? ITEMS_PER_PAGE : searchResults.length;
+      hasNextPage = Boolean(res.pageInfo?.hasNextPage);
       persistSessionSnapshot();
     } catch (e) {
       if (requestId !== resultsRequestId) return;
       console.error("Failed to load results:", e);
+      loadError = "Could not load manga results. Please try again.";
       toasts.add("Downloader: Failed to fetch metadata results.", "error");
-      if (resetPage) {
+      if (appendRequest) {
+        // Preserve loaded cards and restore their pagination if fallback fails.
+        page = previousPage;
+        browseProvider = previousBrowseProvider;
+      } else {
         searchResults = [];
       }
-      persistSessionSnapshot();
+      if (searchResults.length > 0) persistSessionSnapshot();
+      else sessionSnapshot = null;
     } finally {
       if (requestId === resultsRequestId) {
         pendingResultsReset = null;
@@ -561,11 +636,22 @@
     persistSessionSnapshot();
   }
 
-  function handleLoadMore() {
-    if (isLoading || !hasNextPage) return;
+  function showLess() {
+    visibleCount = ITEMS_PER_PAGE;
+    persistSessionSnapshot();
+  }
+
+  async function handleLoadMore() {
+    if (isLoading) return;
+    if (activeTab !== "search" && visibleCount < searchResults.length) {
+      visibleCount = Math.min(visibleCount + ITEMS_PER_PAGE, searchResults.length);
+      persistSessionSnapshot();
+      return;
+    }
+    if (!hasNextPage) return;
     page++;
     persistSessionSnapshot();
-    void refreshResults(false);
+    await refreshResults(false);
   }
 
   // --- Lifecycle ---
@@ -575,7 +661,8 @@
       if (pendingResultsReset !== null) {
         await refreshResults(pendingResultsReset);
       } else {
-        await refreshSeriesTitleStyle();
+        const [, changed] = await Promise.all([refreshSeriesTitleStyle(), refreshMetadataProvider()]);
+        if (changed) await refreshResults();
       }
       return;
     }
@@ -583,7 +670,13 @@
   });
 
   onDestroy(() => {
+    unsubscribeMetadataInvalidation();
     clearTimeout(searchTimeout);
+  });
+
+  const unsubscribeMetadataInvalidation = onMangaMetadataInvalidated(() => {
+    searchResults = [];
+    return refreshResults();
   });
 </script>
 
@@ -630,6 +723,9 @@
             All Time
           </button>
         </div>
+        {#if activeTab !== "search" && browseProvider === "mangabaka" && metadataProvider === "anilist"}
+          <span class="text-xs text-slate-400">Browsing MangaBaka while AniList is unavailable</span>
+        {/if}
       </div>
 
       <!-- Search Group -->
@@ -637,7 +733,7 @@
         <label
           for="manga-search-input"
           class="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-1"
-          >Search Global Database (AniList + Mangabaka)</label
+          >Search Global Database ({metadataProvider === "mangabaka" ? "MangaBaka" : "AniList + MangaBaka"})</label
         >
         <div class="relative group">
           <input
@@ -706,25 +802,28 @@
       in:fade
     >
       <p class="text-slate-500 font-medium">
-        No results found on AniList or Mangabaka
+        {loadError || "No results found on AniList or Mangabaka"}
       </p>
+      {#if loadError}
+        <button onclick={reloadCurrentResults} class="mt-4 text-sm text-blue-400 hover:text-blue-300 underline underline-offset-4">Retry</button>
+      {/if}
     </div>
   {:else if !initialLoading}
     <div
       class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-6"
     >
-      {#each searchResults as manga}
+      {#each (activeTab === "search" ? searchResults : searchResults.slice(0, visibleCount)) as manga}
         <MangaCard
           title={getDisplayTitle(manga)}
           coverUrl={getCoverUrl(manga)}
-          subtitle={getSubtitle(manga)}
+          subtitle={formatMangaStatus(manga?.status)}
           onClick={() => onSelectManga(manga)}
         />
       {/each}
     </div>
 
-    {#if hasNextPage}
-      <div class="flex justify-center py-10">
+    {#if hasNextPage || (activeTab !== "search" && visibleCount < searchResults.length)}
+      <div class="flex justify-center pt-10 {activeTab !== 'search' && searchResults.length > ITEMS_PER_PAGE && visibleCount > ITEMS_PER_PAGE ? 'pb-4' : 'pb-10'}">
         <button
           onclick={handleLoadMore}
           disabled={isLoading}
@@ -737,6 +836,17 @@
           {:else}
             Load More
           {/if}
+        </button>
+      </div>
+    {/if}
+    {#if activeTab !== "search" && searchResults.length > ITEMS_PER_PAGE && visibleCount > ITEMS_PER_PAGE}
+      <div class="flex justify-center pb-4">
+        <button
+          onclick={showLess}
+          disabled={isLoading}
+          class="text-[11px] font-bold text-slate-500 hover:text-slate-300 uppercase tracking-widest transition-colors disabled:opacity-50"
+        >
+          Show Less
         </button>
       </div>
     {/if}

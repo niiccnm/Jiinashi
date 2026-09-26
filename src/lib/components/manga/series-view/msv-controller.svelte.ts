@@ -23,6 +23,8 @@ import type {
 } from "../library-view/mlv-domain-core";
 import {
   mangaSeriesSessionCache,
+  mangaMetadataRevision,
+  onMangaMetadataInvalidated,
   type SeriesSessionCacheEntry,
   type SeriesSessionMatchedSource,
 } from "../mangaSeriesSessionCache";
@@ -36,6 +38,7 @@ import {
   isChapterDownloaded,
   getChapterUnavailableReason,
   toPositiveInt,
+  getSeriesSessionCacheKey,
 } from "./msv-domain-core";
 import { configureSourceDescriptors } from "./msv-domain-match";
 import {
@@ -86,9 +89,9 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
   }
 
   function setInputs(next: MsvControllerInputs = {}) {
-    const previousSeriesId = getSeriesIdFromInput(manga);
+    const previousSeriesKey = getSeriesSessionCacheKey(manga);
     const nextManga = next.manga ?? null;
-    const nextSeriesId = getSeriesIdFromInput(nextManga);
+    const nextSeriesKey = getSeriesSessionCacheKey(nextManga);
 
     manga = nextManga;
     onBack = typeof next.onBack === "function" ? next.onBack : () => {};
@@ -99,11 +102,12 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
         ? next.onDownloadQueued
         : undefined;
 
-    if (previousSeriesId === nextSeriesId) return;
+    if (previousSeriesKey === nextSeriesKey) return;
+    knownMetadataIdentity = {};
     invalidateTrackingContext();
 
-    if (nextSeriesId > 0) {
-      const cached = mangaSeriesSessionCache.get(nextSeriesId);
+    if (nextSeriesKey) {
+      const cached = mangaSeriesSessionCache.get(nextSeriesKey);
       if (cached) {
         isQuickBookmarkLoading = false;
         clearQuickBookmarkRemovalState();
@@ -315,6 +319,12 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
   let chaptersBySource = $state.raw<Record<string, any[]>>({});
   let seriesTitleStyle = $state<SeriesTitleStyle>("romaji");
   let loadToken = 0;
+  let sourceLoadInProgress = false;
+  let knownMetadataIdentity: {
+    anilistId?: number;
+    malId?: number;
+    mangabakaId?: number;
+  } = {};
   let chapterLoadToken = 0;
   let trackingContextVersion = 0;
   let isMounted = true;
@@ -942,7 +952,7 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
 
   function hasSeriesSessionCache() {
     const seriesId = getCurrentSeriesId();
-    return seriesId > 0 && mangaSeriesSessionCache.has(seriesId);
+    return seriesId > 0 && mangaSeriesSessionCache.has(getSeriesSessionCacheKey(manga));
   }
 
   function hasCachedChaptersForSelectedSource() {
@@ -953,7 +963,7 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
     }
     const seriesId = getCurrentSeriesId();
     if (!seriesId) return false;
-    const cached = mangaSeriesSessionCache.get(seriesId);
+    const cached = mangaSeriesSessionCache.get(getSeriesSessionCacheKey(manga));
     if (!cached?.chaptersBySource) return false;
     return Object.prototype.hasOwnProperty.call(cached.chaptersBySource, sourceId);
   }
@@ -975,11 +985,14 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
     currentPage = Number.isFinite(savedPage) && savedPage > 0 ? savedPage : 1;
   }
 
+  let detailMetadataRevision = mangaMetadataRevision;
+
   function persistSeriesSessionCache() {
+    if (detailMetadataRevision !== mangaMetadataRevision) return;
     const seriesId = getCurrentSeriesId();
     if (!seriesId) return;
 
-    mangaSeriesSessionCache.set(seriesId, {
+    mangaSeriesSessionCache.set(getSeriesSessionCacheKey(manga), {
       detail,
       friends,
       availableSources,
@@ -1144,6 +1157,7 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
   );
 
   onDestroy(() => {
+    unsubscribeMetadataInvalidation();
     isMounted = false;
     invalidateTrackingContext();
     if (unsubscribeMangaProgress) {
@@ -1155,14 +1169,18 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
     msvApi.manga.cancelSearchContext(searchContextId).catch(console.error);
   });
 
-  async function loadAnilistDetail(options?: { force?: boolean }) {
+  async function loadAnilistDetail(options?: { force?: boolean; metadataOnly?: boolean }) {
+    const metadataRevisionAtStart = mangaMetadataRevision;
     const forceRefresh = Boolean(options?.force);
-    const token = ++loadToken;
+    const preserveSources = Boolean(options?.metadataOnly && availableSources.length > 0 && !sourceLoadInProgress);
+    const token = preserveSources ? loadToken : ++loadToken;
     const seriesId = getCurrentSeriesId();
     if (!forceRefresh && seriesId > 0) {
-      const cached = mangaSeriesSessionCache.get(seriesId);
+      const cached = mangaSeriesSessionCache.get(getSeriesSessionCacheKey(manga));
       if (cached) {
         applySeriesSessionCache(cached);
+        detailMetadataRevision = metadataRevisionAtStart;
+        sourceLoadInProgress = false;
         void refreshSeriesTitleStyle();
         scanSources(token);
         void prepareQuickBookmarkContext({ silent: true, refreshRemote: true });
@@ -1171,55 +1189,69 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
     }
 
     isLoading = true;
+    if (!preserveSources) sourceLoadInProgress = true;
     await refreshSeriesTitleStyle();
+    if (!isMounted || token !== loadToken || metadataRevisionAtStart !== mangaMetadataRevision) return;
 
+    knownMetadataIdentity = {
+      anilistId: toPositiveInt(detail?.id) || knownMetadataIdentity.anilistId,
+      malId: toPositiveInt(detail?.idMal) || knownMetadataIdentity.malId,
+      mangabakaId: toPositiveInt(detail?.idMangabaka) || knownMetadataIdentity.mangabakaId,
+    };
+    const knownMangabakaId = getMangabakaIdFromInput() || knownMetadataIdentity.mangabakaId || 0;
     detail = null;
     friends = [];
-    resetTrackingContext();
-    isQuickBookmarkLoading = false;
-    clearQuickBookmarkRemovalState();
-    chapters = [];
-    chaptersBySource = {};
-    resetKnownCompletedChapters();
-    selectedChapters = new Set();
-    lastSelectedChapterIndex = null;
-    currentPage = 1;
-    selectedSourceId = null;
-    selectedSourceGroupId = null;
-    selectedVariantByGroup = {};
-    matchedSources = {};
-    scannedSources = {};
-    pendingSlugRankedDuplicateRefinement.clear();
-    scanningByGroup = {};
+    if (!preserveSources) {
+      resetTrackingContext();
+      isQuickBookmarkLoading = false;
+      clearQuickBookmarkRemovalState();
+      chapters = [];
+      chaptersBySource = {};
+      resetKnownCompletedChapters();
+      selectedChapters = new Set();
+      lastSelectedChapterIndex = null;
+      currentPage = 1;
+      selectedSourceId = null;
+      selectedSourceGroupId = null;
+      selectedVariantByGroup = {};
+      matchedSources = {};
+      scannedSources = {};
+      pendingSlugRankedDuplicateRefinement.clear();
+      scanningByGroup = {};
+    }
     try {
       const provider = getSelectedMetadataProvider();
       const anilistIdFromInput =
         toPositiveInt(manga?.anilist_id) ||
         toPositiveInt(manga?.idAnilist) ||
-        (provider === "anilist" ? toPositiveInt(manga?.id) : 0);
-      const mangabakaIdFromInput = getMangabakaIdFromInput();
-      const metadataPromise =
-        provider === "mangabaka"
-          ? mangabakaIdFromInput > 0
-            ? msvApi.manga.mangabakaDetails(mangabakaIdFromInput)
-            : Promise.resolve(null)
-          : anilistIdFromInput > 0
-            ? msvApi.manga.anilistDetails(anilistIdFromInput)
-            : Promise.resolve(null);
+        toPositiveInt(parseAnilistId(manga)) ||
+        (provider === "anilist" ? toPositiveInt(manga?.id) : 0) ||
+        knownMetadataIdentity.anilistId || 0;
+      const malIdFromInput =
+        toPositiveInt(manga?.mal_id) ||
+        toPositiveInt(manga?.idMal) ||
+        toPositiveInt(parseMalId(manga)) ||
+        knownMetadataIdentity.malId || 0;
+      const metadataIdentity: { anilistId?: number; malId?: number; mangabakaId?: number } = {};
+      if (anilistIdFromInput > 0) metadataIdentity.anilistId = anilistIdFromInput;
+      if (malIdFromInput > 0) metadataIdentity.malId = malIdFromInput;
+      if (knownMangabakaId > 0) metadataIdentity.mangabakaId = knownMangabakaId;
+      const metadataPromise = Object.keys(metadataIdentity).length > 0
+        ? msvApi.manga.metadataDetails(metadataIdentity)
+        : Promise.resolve(null);
 
       const [metadataDetail, sources] = await Promise.all([
         metadataPromise.catch(() => null),
-        msvApi.manga.getEnabledSources(),
+        preserveSources ? Promise.resolve(availableSources) : msvApi.manga.getEnabledSources(),
       ]);
-      if (!isMounted || token !== loadToken) return;
-      let resolvedDetail = metadataDetail || null;
-      if (!resolvedDetail && provider === "anilist" && mangabakaIdFromInput > 0) {
-        resolvedDetail = await msvApi.manga.mangabakaDetails(mangabakaIdFromInput).catch(() => null);
+      if (!isMounted || token !== loadToken || metadataRevisionAtStart !== mangaMetadataRevision) return;
+      detail = metadataDetail || null;
+      detailMetadataRevision = metadataRevisionAtStart;
+      if (!preserveSources) {
+        configureSourceDescriptors(sources);
+        availableSources = sources;
+        sourceGroups = buildSourceGroups(sources);
       }
-      detail = resolvedDetail || null;
-      configureSourceDescriptors(sources);
-      availableSources = sources;
-      sourceGroups = buildSourceGroups(sources);
       persistSeriesSessionCache();
       loadFriendsReading(detail, token);
 
@@ -1227,7 +1259,7 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
         msvApi.manga
           .searchMalIdByTitle(detail.id)
           .then((foundMalId) => {
-            if (!isMounted || token !== loadToken) return;
+            if (!isMounted || token !== loadToken || metadataRevisionAtStart !== mangaMetadataRevision) return;
             if (foundMalId && !detail?.idMal) {
               detail = { ...detail, idMal: foundMalId };
               persistSeriesSessionCache();
@@ -1237,13 +1269,14 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
           .catch(() => {});
       }
 
-      scanSources(token);
+      if (!preserveSources) scanSources(token);
       void prepareQuickBookmarkContext({ silent: true, refreshRemote: true });
     } catch (e) {
       console.error("Failed to load manga details:", e);
       toasts.add("Failed to load manga details", "error");
     } finally {
-      if (token !== loadToken) return;
+      if (token !== loadToken || metadataRevisionAtStart !== mangaMetadataRevision) return;
+      if (!preserveSources) sourceLoadInProgress = false;
       isLoading = false;
     }
   }
@@ -1251,6 +1284,10 @@ export function createMsvController(initialInputs: MsvControllerInputs = {}) {
   async function reloadCurrentSeries() {
     await loadAnilistDetail({ force: true });
   }
+
+  const unsubscribeMetadataInvalidation = onMangaMetadataInvalidated(() => {
+    if (manga) void loadAnilistDetail({ metadataOnly: true });
+  });
 
   async function openTrackingEditor() {
     try {
