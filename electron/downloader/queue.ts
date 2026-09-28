@@ -120,6 +120,7 @@ export class QueueManager {
         contentType: row.content_type,
         errorMessage: row.error_message,
         file_path: row.file_path,
+        completed_at: row.completed_at,
         logs: [], // Logs will be loaded on demand via getLogs()
       };
     });

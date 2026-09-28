@@ -40,6 +40,7 @@ export interface MangaDownloadTask {
   error_message?: string;
   outputPath?: string;
   file_path?: string;
+  completed_at?: string | null;
   logs: string[];
   series: MangaSeries;
   chapter: MangaChapter;
@@ -219,6 +220,7 @@ export class MangaQueueManager {
       error_message: row?.error_message || undefined,
       outputPath: row?.file_path || undefined,
       file_path: row?.file_path || undefined,
+      completed_at: row?.completed_at || null,
       logs: [],
       series: normalizedSeries,
       chapter: normalizedChapter,

@@ -241,6 +241,17 @@ export function hideFromMangaQueue(id: number) {
     .run(id);
 }
 
+export function hideMangaQueueItems(ids: number[]) {
+  if (ids.length === 0) return;
+  const database = getDb();
+  const statement = database.prepare(
+    "UPDATE download_history SET hidden_from_manga_queue = 1 WHERE id = ?",
+  );
+  database.transaction(() => {
+    for (const id of ids) statement.run(id);
+  })();
+}
+
 export function updateDownloadProgress(
   id: number,
   downloaded: number,

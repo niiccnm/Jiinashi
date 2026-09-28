@@ -802,6 +802,7 @@ export class DownloaderManager {
 
     task.status = "completed";
     task.outputPath = outPath;
+    task.completed_at = new Date().toISOString();
 
     const duration = Date.now() - startedAt;
     this.appendTaskLog(task, `Total time: ${utils.formatMs(duration)}`);
@@ -809,7 +810,7 @@ export class DownloaderManager {
 
     db.updateDownloadHistory(task.id, {
       status: "completed",
-      completed_at: new Date().toISOString(),
+      completed_at: task.completed_at,
       file_path: outPath,
       artist: task.artist,
       parody: task.parody,

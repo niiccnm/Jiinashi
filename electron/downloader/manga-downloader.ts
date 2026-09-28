@@ -15,6 +15,7 @@ import {
   saveDownloadLogs,
   hideFromQueue,
   hideFromMangaQueue,
+  hideMangaQueueItems,
   pruneTerminalDownloadHistory,
   addItemTypes,
   removeItemTypes,
@@ -59,6 +60,7 @@ export class MangaDownloader {
     this.queueManager.restoreFromDatabase((series, chapter) =>
       this.buildTaskTitle(series, chapter),
     );
+    this.hideDuplicateCompletedQueueItems();
   }
 
   start() {
@@ -70,11 +72,12 @@ export class MangaDownloader {
     this.queueManager.restoreFromDatabase((series, chapter) =>
       this.buildTaskTitle(series, chapter),
     );
+    this.hideDuplicateCompletedQueueItems();
     this.notifyProgress();
     void this.processQueue();
   }
 
-  enqueue(series: MangaSeries, chapter: MangaChapter) {
+  enqueue(series: MangaSeries, chapter: MangaChapter): boolean {
     const normalizedSeries: MangaSeries = {
       ...series,
       source_id: series.source_id || "jiinashi.manga",
@@ -82,6 +85,17 @@ export class MangaDownloader {
       title_original: String(series.title_original || ""),
       reading_format: series.reading_format || "manga",
     };
+    if (
+      this.queueManager.getQueue().some(
+        (task) =>
+          task.source === normalizedSeries.source_id &&
+          task.url === chapter.source_url &&
+          (this.activeTaskIds.has(task.id) ||
+            !["completed", "failed", "cancelled"].includes(task.status)),
+      )
+    ) {
+      return false;
+    }
     const persistedSeriesId = upsertMangaSeriesBySource({
       source_id: normalizedSeries.source_id,
       source_url: normalizedSeries.source_url,
@@ -160,6 +174,7 @@ export class MangaDownloader {
     this.queueManager.addTask(task);
     this.notifyProgress();
     void this.processQueue();
+    return true;
   }
 
   cancelDownload(id: number, notifyUser = true) {
@@ -476,6 +491,7 @@ export class MangaDownloader {
       await fs.remove(tempDir);
 
       task.status = "completed";
+      task.completed_at = new Date().toISOString();
       task.progress.percent = 100;
       task.speed = undefined;
       task.chapter.is_downloaded = true;
@@ -491,7 +507,7 @@ export class MangaDownloader {
       }
       updateDownloadHistory(task.id, {
         status: "completed",
-        completed_at: new Date().toISOString(),
+        completed_at: task.completed_at,
         file_path: outputPath,
         title: task.title,
         source: task.source,
@@ -529,6 +545,7 @@ export class MangaDownloader {
           }`,
         );
       });
+      this.hideDuplicateCompletedQueueItems();
       this.notifyToast(`Downloaded ${task.title}`, "success");
       this.notifyProgress();
     } catch (error: any) {
@@ -581,6 +598,38 @@ export class MangaDownloader {
 
   private enforceHistoryLimit() {
     pruneTerminalDownloadHistory(this.resolveMaxHistoryItems());
+  }
+
+  private hideDuplicateCompletedQueueItems() {
+    const completionTime = (task: MangaDownloadTask) => {
+      if (!task.completed_at) return 0;
+      const timestamp = task.completed_at.includes("T")
+        ? task.completed_at
+        : `${task.completed_at.replace(" ", "T")}Z`;
+      return Date.parse(timestamp) || 0;
+    };
+    const seen = new Set<string>();
+    const duplicateIds: number[] = [];
+    const completed = this.queueManager
+      .getQueue()
+      .filter((task) => task.status === "completed")
+      .sort((left, right) =>
+        completionTime(right) - completionTime(left) || right.id - left.id,
+      );
+
+    for (const task of completed) {
+      const outputPath = task.outputPath || task.file_path;
+      if (!outputPath) continue;
+      const key = `${task.source}\0${task.url}\0${outputPath}`;
+      if (seen.has(key)) {
+        duplicateIds.push(task.id);
+      } else {
+        seen.add(key);
+      }
+    }
+    if (duplicateIds.length === 0) return;
+    hideMangaQueueItems(duplicateIds);
+    for (const id of duplicateIds) this.queueManager.removeTask(id);
   }
 
   private resolveDownloadDelayMs() {

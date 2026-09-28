@@ -668,7 +668,7 @@ export function registerMangaIpcHandlers({
     mangaQueries.getLatestMangaChapterStatesBySourceUrls(sourceUrls || []),
   );
   ipcMain.handle("manga:download-chapter", (_, series: any, chapter: any) => {
-    mangaDownloader.enqueue(series, chapter);
+    return mangaDownloader.enqueue(series, chapter);
   });
   ipcMain.handle("manga:get-download-queue", () => mangaDownloader.getQueue());
   ipcMain.handle("manga:get-download-logs", (_, id: number) =>

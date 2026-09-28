@@ -67,10 +67,48 @@
     return itemType === "manga";
   }
 
-  // Derived filtered lists
+  function queueDisplayRank(item: DownloaderQueueItem | MangaQueueItem) {
+    if (
+      ["parsing", "downloading", "zipping", "verification"].includes(item.status)
+    ) {
+      return 0;
+    }
+    return item.status === "completed" ? 2 : 1;
+  }
+
+  function completionTime(item: DownloaderQueueItem | MangaQueueItem) {
+    if (!item.completed_at) return 0;
+    const timestamp = item.completed_at.includes("T")
+      ? item.completed_at
+      : `${item.completed_at.replace(" ", "T")}Z`;
+    return Date.parse(timestamp) || 0;
+  }
+
+  function sortQueueItems(items: Array<DownloaderQueueItem | MangaQueueItem>) {
+    const completedTimes = new Map<DownloaderQueueItem | MangaQueueItem, number>();
+    for (const item of items) {
+      if (item.status === "completed") {
+        completedTimes.set(item, completionTime(item));
+      }
+    }
+    return items.sort((left, right) => {
+      const rankDifference = queueDisplayRank(left) - queueDisplayRank(right);
+      if (rankDifference) return rankDifference;
+      if (left.status !== "completed" || right.status !== "completed") return 0;
+      return (
+        (completedTimes.get(right) ?? 0) -
+          (completedTimes.get(left) ?? 0) ||
+        right.id - left.id
+      );
+    });
+  }
+
+  // Derived lists
   const filteredQueue = $derived(
-    (mode === "manga" ? mangaQueue : queue).filter((item) =>
-      mode === "manga" ? isMangaItem(item) : !isMangaItem(item),
+    sortQueueItems(
+      (mode === "manga" ? mangaQueue : queue).filter((item) =>
+        mode === "manga" ? isMangaItem(item) : !isMangaItem(item),
+      ),
     ),
   );
   const currentHistoryScope = $derived(getHistoryScope());
@@ -528,6 +566,25 @@
       .sort()
       .join("|");
   }
+
+  let openQueueMenuPosition: { id: number; index: number } | null = null;
+  $effect(() => {
+    if (activeTab !== "queue" || activeMenuId === null) {
+      openQueueMenuPosition = null;
+      return;
+    }
+    const index = filteredQueue.findIndex((item) => item.id === activeMenuId);
+    if (
+      index < 0 ||
+      (openQueueMenuPosition?.id === activeMenuId &&
+        index !== openQueueMenuPosition.index)
+    ) {
+      activeMenuId = null;
+      openQueueMenuPosition = null;
+      return;
+    }
+    openQueueMenuPosition = { id: activeMenuId, index };
+  });
 
   function scheduleHistoryRefresh() {
     if (historyRefreshTimeout) return;

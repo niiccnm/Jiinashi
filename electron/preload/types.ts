@@ -344,6 +344,7 @@ export interface MangaQueueItem {
   error_message?: string;
   outputPath?: string;
   file_path?: string;
+  completed_at?: string | null;
   series: MangaSeries;
   chapter: MangaChapter;
   logs?: string[];
@@ -635,7 +636,7 @@ export interface ElectronAPI {
     downloadChapter: (
       series: MangaDownloadSeriesPayload,
       chapter: MangaDownloadChapterPayload,
-    ) => Promise<void>;
+    ) => Promise<boolean>;
     getDownloadQueue: () => Promise<MangaQueueItem[]>;
     getDownloadLogs: (id: number) => Promise<string[]>;
     cancelDownload: (id: number) => Promise<boolean>;

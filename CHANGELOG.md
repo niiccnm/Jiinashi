@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Files Created**: `src/lib/utils/fuzzySearch.ts`, `src/lib/views/settingsCatalog.ts`, `src/lib/views/settings/`.
   - **Files Modified**: `src/lib/views/Settings.svelte`.
 
+- **Downloader Queues**: Manga and Doujinshi queues now show active downloads at the top and completed downloads at the bottom.
+  - **Queue Order**: Waiting, failed, and cancelled items stay in the middle, or at the top when no downloads are active. Completed items are sorted by completion time, newest first, including after restart. Download processing order is unchanged.
+  - **Manga Requests**: Skip chapters from the same source if already queued, downloading, or still stopping. Redownloads remain available after the previous job ends.
+  - **Download Feedback**: Show accepted and skipped counts. If all chapters are skipped, explain why and keep the selection for another attempt.
+  - **Duplicate Entries**: Keep only the newest completed Manga queue entry per source, chapter, and output file. Preserve history records and downloaded files.
+  - **Performance**: Parse completion timestamps once per queue display update and group duplicate cleanup writes into one database transaction.
+  - **Queue Menus**: Close menus when their row moves or disappears. Ordinary progress updates keep them open.
+  - **Files Modified**: `electron/database/queries/downloads.ts`, `electron/downloader/manager.ts`, `electron/downloader/manga-downloader.ts`, `electron/downloader/manga-queue.ts`, `electron/downloader/queue.ts`, `electron/downloader/types.ts`, `electron/manga-ipc.ts`, `electron/preload/types.ts`, `src/lib/components/manga/series-view/msv-controller-chapters.ts`, `src/lib/views/Downloader.svelte`.
+
 ### Deprecated
 - Soon-to-be removed features
 

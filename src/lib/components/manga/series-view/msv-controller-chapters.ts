@@ -265,7 +265,7 @@ export function createMsvChapterSlice(ctx: any) {
     if (ctx.selectedChapters.size === 0 || !ctx.selectedSourceId) return;
 
     try {
-      let didNotifyDownloadQueued = false;
+      let queuedCount = 0;
       const chaptersToDownload = [...ctx.selectedDownloadableChapters].sort(
         (left: any, right: any) => {
           const leftChapter = Number(left?.chapter_number);
@@ -380,13 +380,27 @@ export function createMsvChapterSlice(ctx: any) {
             : undefined,
         };
 
-        await msvApi.manga.downloadChapter(seriesPayload, chapterPayload);
-        if (!didNotifyDownloadQueued) {
-          didNotifyDownloadQueued = true;
+        const queued = await msvApi.manga.downloadChapter(seriesPayload, chapterPayload);
+        if (!queued) continue;
+        queuedCount += 1;
+        if (queuedCount === 1) {
           ctx.onDownloadQueued?.();
         }
       }
-      toasts.add(`Added ${chaptersToDownload.length} chapters to queue`, "success");
+      if (queuedCount === 0) {
+        toasts.add("Selected chapters are already queued or still stopping", "info");
+        return;
+      }
+      const skippedCount = chaptersToDownload.length - queuedCount;
+      const chapterLabel = queuedCount === 1 ? "chapter" : "chapters";
+      toasts.add(
+        `Added ${queuedCount} ${chapterLabel} to queue${
+          skippedCount
+            ? `; ${skippedCount} already queued or still stopping`
+            : ""
+        }`,
+        "success",
+      );
       ctx.selectedChapters = new Set();
       ctx.lastSelectedChapterIndex = null;
     } catch (e) {

@@ -30,6 +30,7 @@ export interface DownloadTask {
   parody?: string;
   tags?: string[];
   contentType?: string;
+  completed_at?: string | null;
 }
 
 export type DownloadStatus = DownloadTask["status"];
