@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Queue Menus**: Close menus when their row moves or disappears. Ordinary progress updates keep them open.
   - **Files Modified**: `electron/database/queries/downloads.ts`, `electron/downloader/manager.ts`, `electron/downloader/manga-downloader.ts`, `electron/downloader/manga-queue.ts`, `electron/downloader/queue.ts`, `electron/downloader/types.ts`, `electron/manga-ipc.ts`, `electron/preload/types.ts`, `src/lib/components/manga/series-view/msv-controller-chapters.ts`, `src/lib/views/Downloader.svelte`.
 
+- **Manga Library View Layout**: Remembers your grid or list choice when you leave and return during the same app session. Each app launch starts in grid view.
+  - **Files Modified**: `src/lib/components/manga/library-view/mlv-controller.svelte.ts`.
+
 ### Deprecated
 - Soon-to-be removed features
 

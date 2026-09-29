@@ -96,8 +96,8 @@ export type MlvControllerInputs = {
 
 type MlvViewMode = "grid" | "list";
 
-function createDisplayState(initialViewMode: MlvViewMode = "grid") {
-  let viewMode = $state<MlvViewMode>(initialViewMode);
+function createDisplayState() {
+  let viewMode = $state<MlvViewMode>("grid");
 
   function toggleViewMode() {
     viewMode = viewMode === "grid" ? "list" : "grid";
@@ -110,6 +110,9 @@ function createDisplayState(initialViewMode: MlvViewMode = "grid") {
     toggleViewMode,
   };
 }
+
+// Keep the view choice across remounts until the app session ends.
+const displayController = createDisplayState();
 
 export function createMlvController(initialInputs: MlvControllerInputs = {}) {
   function readPersistedSeriesCatalog(): any[] {
@@ -171,7 +174,6 @@ export function createMlvController(initialInputs: MlvControllerInputs = {}) {
 
   let isLoading = $state(true);
   let isRefreshing = $state(false);
-  const displayController = createDisplayState("grid");
   let viewMode = $derived(displayController.viewMode);
   let selectedSeriesId = $state<number | null>(null);
   const initialSeriesCatalog = (
