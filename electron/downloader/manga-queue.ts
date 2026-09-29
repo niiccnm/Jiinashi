@@ -1,5 +1,6 @@
 import {
   getDownloadLogs,
+  getMangaDownloadQueueIds,
   getMangaDownloadsForQueue,
 } from "../database/database";
 import {
@@ -62,6 +63,17 @@ export class MangaQueueManager {
     this.queue.push(task);
   }
 
+  restoreTask(task: MangaDownloadTask) {
+    // Keep refreshed retries in the same order before and after a restart.
+    const ids = getMangaDownloadQueueIds();
+    const position = ids.indexOf(task.id);
+    if (position < 0) return;
+    const followingIds = new Set(ids.slice(position + 1));
+    this.removeTask(task.id);
+    const nextIndex = this.queue.findIndex((queued) => followingIds.has(queued.id));
+    this.queue.splice(nextIndex < 0 ? this.queue.length : nextIndex, 0, task);
+  }
+
   findTask(id: number) {
     return this.queue.find((task) => task.id === id);
   }
@@ -102,7 +114,7 @@ export class MangaQueueManager {
       .filter((task): task is MangaDownloadTask => !!task);
   }
 
-  private restoreTaskFromHistory(
+  restoreTaskFromHistory(
     row: any,
     buildTaskTitle: TaskTitleBuilder,
   ): MangaDownloadTask | null {
@@ -112,7 +124,7 @@ export class MangaQueueManager {
     const url = String(row?.url || "").trim();
     if (!url) return null;
 
-    const seriesId = getMangaSeriesIdByChapterSourceUrl(url);
+    const seriesId = getMangaSeriesIdByChapterSourceUrl(url, row?.source || undefined);
     const persistedSeries =
       seriesId && seriesId > 0 ? getMangaSeries(seriesId) : null;
     const persistedChapter =

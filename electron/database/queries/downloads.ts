@@ -22,7 +22,7 @@ export function addDownloadHistory(entry: {
 }): number {
   const info = getDb()
     .prepare(
-      "INSERT INTO download_history (url, title, status, source, cover_url, artist, parody, content_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO download_history (url, title, status, source, cover_url, artist, parody, content_type, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
     )
     .run(
       entry.url,
@@ -33,6 +33,9 @@ export function addDownloadHistory(entry: {
       entry.artist || null,
       entry.parody || null,
       entry.content_type || null,
+      entry.content_type === "manga"
+        ? new Date().toISOString().slice(0, -1).replace("T", " ")
+        : null,
     );
   return info.lastInsertRowid as number;
 }
@@ -45,11 +48,13 @@ export function updateDownloadHistory(
     source: string;
     cover_url: string;
     completed_at: string;
+    added_at: string;
     file_path: string;
     error_message: string;
     artist: string;
     parody: string;
     content_type: string;
+    hidden_from_manga_queue: number;
   }>,
 ) {
   const fields = Object.keys(updates);
@@ -146,7 +151,7 @@ export function pruneTerminalDownloadHistory(limit: number) {
            SELECT id
            FROM download_history
            WHERE ${whereClause}
-           ORDER BY datetime(COALESCE(completed_at, added_at)) DESC, id DESC
+           ORDER BY julianday(COALESCE(completed_at, added_at)) DESC, id DESC
            LIMIT ?
          )`,
     )
@@ -213,6 +218,17 @@ export function getLatestDownloadHistoryByUrl(url: string) {
     .get(url) as any;
 }
 
+export function getRetryableMangaDownload(source: string, url: string) {
+  return getDb()
+    .prepare(
+      `SELECT id FROM download_history
+       WHERE content_type = 'manga' AND source = ? AND url = ?
+         AND status IN ('failed', 'cancelled')
+       ORDER BY added_at DESC, id DESC LIMIT 1`,
+    )
+    .get(source, url) as { id: number } | undefined;
+}
+
 export function getDownloadsForQueue() {
   return getDb()
     .prepare(
@@ -224,9 +240,18 @@ export function getDownloadsForQueue() {
 export function getMangaDownloadsForQueue() {
   return getDb()
     .prepare(
-      "SELECT * FROM download_history WHERE content_type = 'manga' AND (hidden_from_manga_queue = 0 OR hidden_from_manga_queue IS NULL) ORDER BY added_at ASC",
+      "SELECT * FROM download_history WHERE content_type = 'manga' AND (hidden_from_manga_queue = 0 OR hidden_from_manga_queue IS NULL) ORDER BY added_at ASC, id ASC",
     )
     .all() as any[];
+}
+
+export function getMangaDownloadQueueIds(): number[] {
+  const rows = getDb()
+    .prepare(
+      "SELECT id FROM download_history WHERE content_type = 'manga' AND (hidden_from_manga_queue = 0 OR hidden_from_manga_queue IS NULL) ORDER BY added_at ASC, id ASC",
+    )
+    .all() as { id: number }[];
+  return rows.map((row) => row.id);
 }
 
 export function hideFromQueue(id: number) {

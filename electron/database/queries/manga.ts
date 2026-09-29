@@ -583,6 +583,7 @@ export function getMangaChapterBySource(
 
 export function getMangaSeriesIdByChapterSourceUrl(
   sourceUrl: string,
+  sourceId?: string,
 ): number | null {
   const db = getDb();
   const row = db
@@ -591,11 +592,14 @@ export function getMangaSeriesIdByChapterSourceUrl(
     SELECT series_id
     FROM manga_chapters
     WHERE source_url = ?
+      ${sourceId ? "AND series_id IN (SELECT id FROM manga_series WHERE source_id = ?)" : ""}
     ORDER BY id DESC
     LIMIT 1
   `,
     )
-    .get(sourceUrl) as { series_id?: number } | undefined;
+    .get(...(sourceId ? [sourceUrl, sourceId] : [sourceUrl])) as
+      | { series_id?: number }
+      | undefined;
   const seriesId = Number(row?.series_id || 0);
   return seriesId > 0 ? seriesId : null;
 }

@@ -10,6 +10,8 @@ import {
   getSetting,
   setSetting,
   addDownloadHistory,
+  getDownloadHistoryItem,
+  getRetryableMangaDownload,
   updateDownloadHistory,
   updateDownloadProgress,
   saveDownloadLogs,
@@ -61,6 +63,7 @@ export class MangaDownloader {
       this.buildTaskTitle(series, chapter),
     );
     this.hideDuplicateCompletedQueueItems();
+    this.hideSupersededFailedQueueItems();
   }
 
   start() {
@@ -73,6 +76,7 @@ export class MangaDownloader {
       this.buildTaskTitle(series, chapter),
     );
     this.hideDuplicateCompletedQueueItems();
+    this.hideSupersededFailedQueueItems();
     this.notifyProgress();
     void this.processQueue();
   }
@@ -86,16 +90,15 @@ export class MangaDownloader {
       reading_format: series.reading_format || "manga",
     };
     if (
-      this.queueManager.getQueue().some(
-        (task) =>
-          task.source === normalizedSeries.source_id &&
-          task.url === chapter.source_url &&
-          (this.activeTaskIds.has(task.id) ||
-            !["completed", "failed", "cancelled"].includes(task.status)),
-      )
+      this.hasActiveChapterDownload(normalizedSeries.source_id, chapter.source_url)
     ) {
       return false;
     }
+    const previousAttempt = getRetryableMangaDownload(
+      normalizedSeries.source_id,
+      chapter.source_url,
+    );
+    if (previousAttempt && this.activeTaskIds.has(previousAttempt.id)) return false;
     const persistedSeriesId = upsertMangaSeriesBySource({
       source_id: normalizedSeries.source_id,
       source_url: normalizedSeries.source_url,
@@ -130,6 +133,21 @@ export class MangaDownloader {
       download_path: normalizedExistingDownloadPath || undefined,
     };
 
+    if (persistedSeriesId) {
+      upsertMangaChapterBySource({
+        ...normalizedChapter,
+        series_id: persistedSeriesId,
+        is_downloaded: isPreviouslyDownloaded,
+        download_path: normalizedChapter.download_path,
+      });
+    }
+    if (previousAttempt) {
+      return this.retryDownload(previousAttempt.id, {
+        series: normalizedSeries,
+        chapter: normalizedChapter,
+      });
+    }
+
     const taskTitle = this.buildTaskTitle(normalizedSeries, normalizedChapter);
 
     const id = addDownloadHistory({
@@ -161,17 +179,9 @@ export class MangaDownloader {
       chapter: normalizedChapter,
     };
 
-    if (persistedSeriesId) {
-      upsertMangaChapterBySource({
-        ...normalizedChapter,
-        series_id: persistedSeriesId,
-        is_downloaded: isPreviouslyDownloaded,
-        download_path: normalizedChapter.download_path,
-      });
-    }
-
     this.appendTaskLog(task, `Queued: ${taskTitle}`);
     this.queueManager.addTask(task);
+    this.hideSupersededFailedQueueItems(task);
     this.notifyProgress();
     void this.processQueue();
     return true;
@@ -240,14 +250,39 @@ export class MangaDownloader {
     await Promise.allSettled(activePromises);
   }
 
-  retryDownload(id: number) {
-    const task = this.queueManager.findTask(id);
-    if (!task) return;
-    if (!["failed", "cancelled"].includes(task.status)) return;
+  retryDownload(
+    id: number,
+    metadata?: { series: MangaSeries; chapter: MangaChapter },
+  ): boolean {
+    let task = this.queueManager.findTask(id);
+    if (!task) {
+      const row = getDownloadHistoryItem(id);
+      if (row?.content_type !== "manga") return false;
+      task =
+        this.queueManager.restoreTaskFromHistory(row, (series, chapter) =>
+          this.buildTaskTitle(series, chapter),
+        ) ?? undefined;
+    }
+    if (!task) return false;
+    if (!["failed", "cancelled"].includes(task.status)) return false;
+    if (this.activeTaskIds.has(id) || this.hasActiveChapterDownload(task.source, task.url)) {
+      return false;
+    }
 
+    if (metadata) {
+      task.series = metadata.series;
+      task.chapter = metadata.chapter;
+      task.title = this.buildTaskTitle(task.series, task.chapter);
+      task.cover_url = task.series.cover_url;
+    }
+    if (task.logs.length === 0) task.logs = this.queueManager.getLogs(task.id);
     task.status = "pending";
     task.errorMessage = undefined;
     task.error_message = undefined;
+    task.completed_at = undefined;
+    task.outputPath = undefined;
+    task.file_path = undefined;
+    task.preview_data = undefined;
     task.downloadedImages = 0;
     task.totalImages = 0;
     task.bytesDownloaded = 0;
@@ -257,9 +292,20 @@ export class MangaDownloader {
     updateDownloadHistory(task.id, {
       status: "pending",
       error_message: undefined,
+      completed_at: undefined,
+      added_at: new Date().toISOString().slice(0, -1).replace("T", " "),
+      file_path: undefined,
+      title: task.title,
+      cover_url: task.cover_url || "",
+      hidden_from_manga_queue: 0,
     });
+    updateDownloadProgress(task.id, 0, 0, 0);
+    saveDownloadLogs(task.id, task.logs);
+    this.queueManager.restoreTask(task);
+    this.hideSupersededFailedQueueItems(task);
     this.notifyProgress();
     void this.processQueue();
+    return true;
   }
 
   clearFinished() {
@@ -329,6 +375,7 @@ export class MangaDownloader {
       const activePromise = this.downloadChapter(nextTask).finally(() => {
         this.activeTaskIds.delete(nextTask.id);
         this.activeTaskPromises.delete(nextTask.id);
+        this.hideSupersededFailedQueueItems(nextTask);
         this.notifyProgress();
         void this.processQueue();
       });
@@ -598,6 +645,52 @@ export class MangaDownloader {
 
   private enforceHistoryLimit() {
     pruneTerminalDownloadHistory(this.resolveMaxHistoryItems());
+  }
+
+  private hasActiveChapterDownload(source: string, url: string) {
+    return this.queueManager.getQueue().some(
+      (task) =>
+        task.source === source &&
+        task.url === url &&
+        (this.activeTaskIds.has(task.id) ||
+          !["completed", "failed", "cancelled"].includes(task.status)),
+    );
+  }
+
+  private hideSupersededFailedQueueItems(currentAttempt?: MangaDownloadTask) {
+    const queue = this.queueManager.getQueue();
+    const latestIds = new Map<string, number>();
+    for (const task of queue) {
+      if (task.status !== "failed") continue;
+      const key = `${task.source}\0${task.url}`;
+      latestIds.set(key, Math.max(latestIds.get(key) || 0, task.id));
+    }
+    // Retry reuses an existing ID, so the current attempt can have a lower ID.
+    if (currentAttempt) {
+      latestIds.set(
+        `${currentAttempt.source}\0${currentAttempt.url}`,
+        currentAttempt.id,
+      );
+    }
+
+    const supersededIds = queue
+      .filter(
+        (task) =>
+          task.status === "failed" &&
+          !this.activeTaskIds.has(task.id) &&
+          task.id !== latestIds.get(`${task.source}\0${task.url}`),
+      )
+      .map((task) => task.id);
+    if (supersededIds.length === 0) return;
+    try {
+      hideMangaQueueItems(supersededIds);
+    } catch (error) {
+      this.log(
+        `${this.logPrefix} Failed to hide superseded queue entries: ${error}`,
+      );
+      return;
+    }
+    for (const id of supersededIds) this.queueManager.removeTask(id);
   }
 
   private hideDuplicateCompletedQueueItems() {

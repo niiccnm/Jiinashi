@@ -102,6 +102,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Manga Browsing Pagination**: Keeps loaded results and "Load More" available after a failed request or an unexpectedly empty AniList continuation page. Users can retry the same page without switching tabs.
   - **Files Modified**: `src/lib/components/manga/MetadataBrowser.svelte`.
 
+- **Manga Download Retries**: Failed and cancelled downloads now reuse their history entry when attempted again.
+  - **History Entries**: Reuse the entry for the same chapter URL and provider, even after clearing it from the queue. A successful retry updates that entry to completed.
+  - **Retry State**: Refresh chapter details and the attempt time, reset progress and errors, and retain download logs. Completed downloads keep their own history entries.
+  - **Queue Behavior**: Keep retry order consistent after restart and prevent overlapping attempts while the chapter is queued, downloading, or still stopping. Older failed queue duplicates remain hidden without deleting history records.
+  - **Provider Matching**: Restore downloads through their original provider, even if another provider uses the same chapter URL.
+  - **Files Modified**: `electron/database/queries/downloads.ts`, `electron/database/queries/manga.ts`, `electron/downloader/manga-downloader.ts`, `electron/downloader/manga-queue.ts`.
+
 ### Security
 - Vulnerability fixes
 
