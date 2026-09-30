@@ -17,6 +17,7 @@
   import FolderSwitcher from "../components/FolderSwitcher.svelte";
   import FilterEmptyState from "../components/Library/FilterEmptyState.svelte";
   import type { LibraryItem } from "../stores/app";
+  import { getLibraryReadingProgress } from "../utils/libraryReadingProgress";
   import { toasts } from "../stores/toast";
   import {
     parseContentFilterSettings,
@@ -1000,11 +1001,6 @@
   function handleCancelDelete() {
     showDeleteDialog = false;
     pendingDeleteItem = null;
-  }
-
-  function getReadingProgress(item: LibraryItem): number {
-    if (!item.page_count || item.page_count === 0) return 0;
-    return Math.round((item.current_page / item.page_count) * 100);
   }
 
   function getStatusColor(status: LibraryItem["reading_status"]) {
@@ -2007,13 +2003,13 @@
             {/if}
 
             <!-- Reading progress bar -->
-            {#if item.type === "book" && item.current_page > 0 && item.page_count > 0}
+            {#if item.type === "book" && getLibraryReadingProgress(item) > 0}
               <div
                 class="absolute bottom-0 left-0 right-0 h-1 bg-black/50 z-20"
               >
                 <div
                   class="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-300"
-                  style="width: {getReadingProgress(item)}%"
+                  style="width: {getLibraryReadingProgress(item)}%"
                 ></div>
               </div>
             {/if}

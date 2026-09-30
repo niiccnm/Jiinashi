@@ -20,6 +20,7 @@ export interface LibraryItem {
   title: string;
   type: "book" | "folder";
   page_count: number;
+  visible_page_count?: number;
   cover_path: string | null;
   parent_id: number | null;
   is_favorite: boolean;

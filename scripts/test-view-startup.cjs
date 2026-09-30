@@ -10,6 +10,10 @@ function compileScript(file, wrapInstance = script => script) {
   let source = file.endsWith('.svelte') ? [...fileSource
     .matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
     .map(([, attributes, script]) => /\bmodule\b/.test(attributes) ? script : wrapInstance(script)).join('\n') : fileSource;
+  if (source.includes('../utils/libraryReadingProgress')) {
+    source = fs.readFileSync('src/lib/utils/libraryReadingProgress.ts', 'utf8') + '\n'
+      + (source.includes('getProgressPercent') ? 'const getProgressPercent = getLibraryReadingProgress;\n' : '') + source;
+  }
   if (source.includes('expandRomajiLongVowels')) {
     const utilities = ts.createSourceFile('manga.ts', fs.readFileSync('src/lib/utils/manga.ts', 'utf8'), ts.ScriptTarget.ES2022, true);
     const helper = utilities.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'expandRomajiLongVowels');
@@ -31,6 +35,48 @@ function compileScript(file, wrapInstance = script => script) {
     .replace(/^/, 'const onMangaMetadataInvalidated = globalThis.onMangaMetadataInvalidated || (() => () => {});\n');
 }
 const compiled = compileScript('src/App.svelte');
+
+test('Recent updates card progress immediately from the full item broadcast', async () => {
+  const initial = { id: 7, type: 'book', current_page: 0, page_count: 20, reading_status: 'reading', last_read_at: '2026-09-29T00:00:00Z', cover_path: null };
+  const mounts = [];
+  const listeners = new Map();
+  const filter = { blurR18: false, blurR18Hover: false, blurR18Intensity: 12 };
+  let reads = 0;
+  const library = { getRecent: async () => { reads++; return [{ ...initial }]; } };
+  for (const event of ['onItemUpdated', 'onRefreshed', 'onCleared', 'onItemsDeleted']) {
+    library[event] = callback => { listeners.set(event, callback); return () => listeners.delete(event); };
+  }
+  const sandbox = {
+    console, $state: value => value, $effect() {}, untrack: fn => fn(),
+    $props: () => ({ active: true, contentFilter: filter }),
+    onMount: fn => mounts.push(fn), tick: async () => {},
+    setTimeout() { return 1; }, clearTimeout() {},
+    parseContentFilterSettings: () => filter,
+    window: { electronAPI: { library, settings: { getAll: async () => ({}) } } },
+  };
+  vm.runInNewContext(`${compileScript('src/lib/views/Recent.svelte')}
+    globalThis.inspectProgress = () => getProgressPercent(items[0]);`, sandbox);
+  const cleanups = mounts.map(fn => fn());
+  try {
+    await new Promise(setImmediate);
+    assert.equal(sandbox.inspectProgress(), 5);
+    await listeners.get('onItemUpdated')({ ...initial, reading_status: 'read', page_count: 0 });
+    assert.equal(sandbox.inspectProgress(), 100, 'completion applies without waiting for the delayed reload');
+    await listeners.get('onItemUpdated')({ ...initial, reading_status: 'unread', current_page: 19 });
+    assert.equal(sandbox.inspectProgress(), 0, 'unread overrides the old position immediately');
+    await listeners.get('onItemUpdated')({ ...initial, reading_status: 'reading', current_page: 9, page_count: 40 });
+    assert.equal(sandbox.inspectProgress(), 25, 'the current page count applies immediately');
+    await listeners.get('onItemUpdated')({ ...initial, visible_page_count: 10 });
+    assert.equal(sandbox.inspectProgress(), 10, 'hiding a page updates the effective count immediately');
+    await listeners.get('onItemUpdated')({ ...initial, visible_page_count: 0, reading_status: 'read' });
+    assert.equal(sandbox.inspectProgress(), 0, 'all-hidden archives empty the bar immediately');
+    await listeners.get('onItemUpdated')({ ...initial, visible_page_count: 20 });
+    assert.equal(sandbox.inspectProgress(), 5, 'restoring visibility updates the bar immediately');
+    assert.equal(reads, 1, 'progress events need no additional list read');
+  } finally {
+    cleanups.forEach(cleanup => cleanup());
+  }
+});
 
 test('dependency discovery and watching exclude archives and scratch directories', async () => {
   const { loadConfigFromFile } = await import('vite');

@@ -35,7 +35,7 @@
     getCoverSrc,
     getStatusColor,
     getStatusLabel,
-    getReadingProgress,
+    getLibraryReadingProgress,
     getBreadcrumbPath,
     getLanguageCodes,
     onItemClick,
@@ -66,7 +66,7 @@
     getCoverSrc: (item: LibraryItem) => string | null;
     getStatusColor: (status: LibraryItem["reading_status"]) => string;
     getStatusLabel: (status: string) => string;
-    getReadingProgress: (item: LibraryItem) => number;
+    getLibraryReadingProgress: (item: LibraryItem) => number;
     getBreadcrumbPath: (item: LibraryItem) => string;
     getLanguageCodes: (tagsList: string | undefined) => string[];
     onItemClick: (item: LibraryItem, event?: MouseEvent | KeyboardEvent) => void;
@@ -597,11 +597,11 @@
       </div>
     {/if}
 
-    {#if item.type === "book" && item.current_page > 0 && item.page_count > 0}
+    {#if item.type === "book" && getLibraryReadingProgress(item) > 0}
       <div class="absolute bottom-0 left-0 right-0 h-1 bg-black/50">
         <div
           class="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-300"
-          style="width: {getReadingProgress(item)}%"
+          style="width: {getLibraryReadingProgress(item)}%"
         ></div>
       </div>
     {/if}

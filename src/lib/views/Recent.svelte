@@ -3,6 +3,7 @@
   import { fade } from "svelte/transition";
   import { openBook } from "../stores/app";
   import type { LibraryItem } from "../stores/app";
+  import { getLibraryReadingProgress as getProgressPercent } from "../utils/libraryReadingProgress";
   import { dragScroll } from "../utils/dragScroll";
   import Dialog from "../components/Dialog.svelte";
   import ArchiveManager from "../components/ArchiveManager.svelte";
@@ -326,11 +327,6 @@
     return date.toLocaleDateString();
   }
 
-  function getProgressPercent(item: LibraryItem): number {
-    if (item.page_count === 0) return 0;
-    return Math.round((item.current_page / item.page_count) * 100);
-  }
-
   onMount(() => {
     void Promise.allSettled([loadRecent(), refreshSettings()]).then(async () => {
       await tick();
@@ -346,6 +342,9 @@
           const updated = {
             ...items[existingIndex],
             current_page: payload.current_page,
+            page_count: payload.page_count,
+            visible_page_count: payload.visible_page_count,
+            reading_status: payload.reading_status,
             last_read_at:
               payload.last_read_at ?? items[existingIndex].last_read_at,
           };
@@ -468,6 +467,7 @@
   {:else}
     <div class="space-y-3">
       {#each items as item (item.id)}
+        {@const pageCount = item.visible_page_count ?? item.page_count}
         <div
           role="button"
           tabindex="0"
@@ -643,7 +643,13 @@
               {/if}
             {/if}
             <p class="text-sm text-slate-400 mt-1">
-              Page {item.current_page + 1} of {item.page_count}
+              {#if item.page_count > 0 && pageCount === 0}
+                No visible pages
+              {:else}
+                Page {pageCount > 0
+                  ? Math.min(item.current_page + 1, pageCount)
+                  : item.current_page + 1} of {pageCount}
+              {/if}
             </p>
             <!-- Progress bar -->
             <div class="mt-2 h-1.5 bg-slate-700 rounded-full overflow-hidden">

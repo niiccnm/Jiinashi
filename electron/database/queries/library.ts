@@ -2,6 +2,11 @@ import { getDb, LibraryItem, SearchResult } from "../database";
 import { ContentType } from "../metadata";
 import { TagWithCategory } from "./tags";
 
+// Keep archive metadata intact; reader positions refer only to visible pages.
+const VISIBLE_PAGE_COUNT_SQL = `MAX(0, li.page_count - (
+  SELECT COUNT(*) FROM page_visibility pv WHERE pv.item_id = li.id
+)) AS visible_page_count`;
+
 // --- LIBRARY OPERATIONS ----------------------------------------------------
 export function getAllItems(
   parentId: number | null = null,
@@ -18,7 +23,7 @@ export function getAllItems(
   }
 
   const sql = `
-    SELECT li.*, 
+    SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
     GROUP_CONCAT(DISTINCT t.name) as tags_list,
     GROUP_CONCAT(DISTINCT ct.name) as types_list
     FROM library_items li
@@ -47,7 +52,9 @@ export function getAllItems(
 }
 
 export function getAllItemsFlat(): LibraryItem[] {
-  return getDb().prepare("SELECT * FROM library_items").all() as LibraryItem[];
+  return getDb()
+    .prepare(`SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL} FROM library_items li`)
+    .all() as LibraryItem[];
 }
 
 export function getItemByPath(itemPath: string): LibraryItem | undefined {
@@ -55,7 +62,7 @@ export function getItemByPath(itemPath: string): LibraryItem | undefined {
   return getDb()
     .prepare(
       `
-    SELECT li.*, 
+    SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
     GROUP_CONCAT(DISTINCT t.name) as tags_list,
     GROUP_CONCAT(DISTINCT ct.name) as types_list
     FROM library_items li
@@ -74,7 +81,7 @@ export function getItemById(id: number): LibraryItem | undefined {
   return getDb()
     .prepare(
       `
-    SELECT li.*, 
+    SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
     GROUP_CONCAT(DISTINCT t.name) as tags_list,
     GROUP_CONCAT(DISTINCT ct.name) as types_list
     FROM library_items li
@@ -98,7 +105,7 @@ export function getSeriesBookItems(seriesId: number): LibraryItem[] {
   return getDb()
     .prepare(
       `
-      SELECT li.*,
+      SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
       GROUP_CONCAT(DISTINCT t.name) as tags_list,
       GROUP_CONCAT(DISTINCT ct.name) as types_list
       FROM library_items li
@@ -205,7 +212,7 @@ export function searchItems(
   });
 
   let sql = `
-    SELECT li.*,
+    SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
     GROUP_CONCAT(DISTINCT t.name) as tags_list,
     GROUP_CONCAT(DISTINCT ct.name) as types_list
     FROM library_items li
@@ -471,7 +478,7 @@ export function getFavorites(rootPath?: string): LibraryItem[] {
     const items = getDb()
       .prepare(
         `
-      SELECT li.*, 
+      SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
       GROUP_CONCAT(DISTINCT t.name) as tags_list,
       GROUP_CONCAT(DISTINCT ct.name) as types_list
       FROM library_items li
@@ -496,7 +503,7 @@ export function getRecent(limit: number = 20): LibraryItem[] {
   return getDb()
     .prepare(
       `
-      SELECT li.*, 
+      SELECT li.*, ${VISIBLE_PAGE_COUNT_SQL},
       GROUP_CONCAT(DISTINCT t.name) as tags_list,
       GROUP_CONCAT(DISTINCT ct.name) as types_list
       FROM library_items li

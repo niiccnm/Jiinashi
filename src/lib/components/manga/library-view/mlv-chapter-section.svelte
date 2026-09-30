@@ -2,6 +2,7 @@
   import { fade } from "svelte/transition";
   import { anchoredMenu } from "../../../utils/anchoredMenu";
   import type { LibraryItem } from "../../../stores/app";
+  import { getLibraryReadingProgress } from "../../../utils/libraryReadingProgress";
   import { handleSelectionMouseDown } from "../../../state/selection.svelte";
   import type { MlvChapterActions, MlvSelectionContext } from "./mlv-types";
 
@@ -418,16 +419,11 @@
             </div>
           {/if}
 
-          {#if item.current_page > 0 && item.page_count > 0}
+          {#if getLibraryReadingProgress(item) > 0}
             <div class="absolute bottom-0 left-0 right-0 h-1 bg-black/50">
               <div
                 class="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-300"
-                style="width: {(Math.max(
-                  0,
-                  Math.min(item.current_page, item.page_count),
-                ) /
-                  item.page_count) *
-                  100}%"
+                style="width: {getLibraryReadingProgress(item)}%"
               ></div>
             </div>
           {/if}
@@ -621,16 +617,11 @@
           </div>
         {/if}
 
-        {#if item.current_page > 0 && item.page_count > 0}
+        {#if getLibraryReadingProgress(item) > 0}
           <div class="absolute bottom-0 left-0 right-0 h-[3px] bg-slate-950/40">
             <div
               class="h-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)] transition-all duration-500"
-              style="width: {(Math.max(
-                0,
-                Math.min(item.current_page, item.page_count),
-              ) /
-                item.page_count) *
-                100}%"
+              style="width: {getLibraryReadingProgress(item)}%"
             ></div>
           </div>
         {/if}

@@ -22,6 +22,7 @@
   import { SelectionModel } from "../state/selection.svelte";
   import { toasts } from "../stores/toast";
   import type { LibraryItem } from "../stores/app";
+  import { getLibraryReadingProgress } from "../utils/libraryReadingProgress";
   import type { MangaPreference } from "../utils/manga";
   import {
     parseContentFilterSettings,
@@ -1730,11 +1731,6 @@
     }
   }
 
-  function getReadingProgress(item: LibraryItem): number {
-    if (!item.page_count || item.page_count === 0) return 0;
-    return Math.round((item.current_page / item.page_count) * 100);
-  }
-
   // Scanning logic (Simplified for stack)
   // ... (Keeping mostly same, just refreshing current view)
   let isScanning = $state(false);
@@ -2929,7 +2925,7 @@
                 getCoverSrc={getCoverSrc}
                 getStatusColor={getStatusColor}
                 getStatusLabel={getStatusLabel}
-                getReadingProgress={getReadingProgress}
+                getLibraryReadingProgress={getLibraryReadingProgress}
                 getBreadcrumbPath={getBreadcrumbPath}
                 getLanguageCodes={getLanguageCodes}
                 onItemClick={handleItemClick}

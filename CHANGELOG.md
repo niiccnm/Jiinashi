@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New features or functionality
+
+### Changed
+- Changes in existing functionality
+
+### Deprecated
+- Soon-to-be removed features
+
+### Removed
+- Now removed features
+
+### Fixed
+- Bug fixes
+
+### Security
+- Vulnerability fixes
+
+---
+
+## [v0.0.4] - 2026-09-30
+
+### Added
 
 - **Reader Greyscale Mode**: Added a neutral greyscale display filter for pages in Single Page, Double Page, and Webtoon modes.
   - **Controls**: Can be toggled from the reader settings panel or with `Ctrl+Shift+C`; resetting Image Display also turns it off.
@@ -55,12 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Manga Library View Layout**: Remembers your grid or list choice when you leave and return during the same app session. Each app launch starts in grid view.
   - **Files Modified**: `src/lib/components/manga/library-view/mlv-controller.svelte.ts`.
-
-### Deprecated
-- Soon-to-be removed features
-
-### Removed
-- Now removed features
 
 ### Fixed
 
@@ -112,8 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Provider Matching**: Restore downloads through their original provider, even if another provider uses the same chapter URL.
   - **Files Modified**: `electron/database/queries/downloads.ts`, `electron/database/queries/manga.ts`, `electron/downloader/manga-downloader.ts`, `electron/downloader/manga-queue.ts`.
 
-### Security
-- Vulnerability fixes
+- **Library Reading Progress**: Fixed progress bars in Recent, Library, Favorites, and MLV grid and list views stopping short of 100% on the final page.
+  - **Progress Accuracy**: Bars now use the page reached, respect unread and completed status, and avoid rounding unfinished works up to 100%.
+  - **Hidden Pages**: Hidden pages are excluded from progress totals. Hiding or restoring pages updates the bars and Recent's page label; works with every page hidden show no progress.
+  - **Recent Updates**: Recent applies page counts and reading status updates immediately.
+  - **Files Created**: `src/lib/utils/libraryReadingProgress.ts`.
+  - **Files Modified**: `electron/database/database.ts`, `electron/database/queries/library.ts`, `electron/preload/types.ts`, `src/lib/stores/app.ts`, `src/lib/views/Recent.svelte`, `src/lib/views/Library.svelte`, `src/lib/views/Favorites.svelte`, `src/lib/components/Library/LibraryGridItem.svelte`, `src/lib/components/manga/library-view/mlv-chapter-section.svelte`, `scripts/test-view-startup.cjs`.
 
 ---
 
